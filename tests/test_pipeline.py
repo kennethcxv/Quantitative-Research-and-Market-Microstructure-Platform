@@ -188,3 +188,59 @@ def test_test_period_data_cannot_influence_model_selection(workdir: Path) -> Non
 
     assert split(clean, "dev_oos").equals(split(changed, "dev_oos"))
     assert not split(clean, "test")["pred"].equals(split(changed, "test")["pred"])
+
+
+def test_signals_cover_rows_without_labels(workdir: Path) -> None:
+    run = _runs(workdir)[0]
+    preds = pl.read_parquet(run / "predictions.parquet").filter(pl.col("split") == "test")
+    signals = pl.read_parquet(run / "signals.parquet").filter(pl.col("split") == "test")
+    # Every labelled test row has the same forecast in both; signals also cover the unlabelled
+    # rows (e.g. the last horizon of the session), so they never depend on the future.
+    joined = preds.join(signals, on="t_ns", suffix="_signal")
+    assert joined.height == preds.height
+    assert (joined["pred"] == joined["pred_signal"]).all()
+    assert signals.height > preds.height
+
+
+def test_stage_reruns_refuse_an_edited_config(workdir: Path) -> None:
+    from qrp.experiment import RunIntegrityError, evaluate_run
+
+    run = _runs(workdir)[0]
+    original = (run / "config.toml").read_text()
+    try:
+        (run / "config.toml").write_text(
+            original.replace("taker_fee_bps = 2.0", "taker_fee_bps = 0.0")
+        )
+        with pytest.raises(RunIntegrityError):
+            evaluate_run(run)
+        with pytest.raises(RunIntegrityError):
+            main(["backtest", str(run)])
+    finally:
+        (run / "config.toml").write_text(original)
+
+
+def test_test_access_ledger_counts_across_runs_directories(workdir: Path) -> None:
+    ledger = workdir / "catalog" / "synthetic" / "test_access.jsonl"
+    before = len(ledger.read_text().splitlines())
+    elsewhere = workdir / "other_runs"
+    main(
+        [
+            "run",
+            "--config",
+            str(workdir / "synthetic.toml"),
+            "--runs",
+            str(elsewhere),
+            "--no-controls",
+        ]
+    )
+    (run,) = sorted((elsewhere / "synthetic_imbalance").iterdir())
+    manifest = json.loads((run / "manifest.json").read_text())
+    assert manifest["test_evaluations_before_this_run"] == before
+    assert len(ledger.read_text().splitlines()) == before + 1
+
+
+def test_features_command_excludes_the_test_period_by_default(workdir: Path) -> None:
+    out = workdir / "features.parquet"
+    main(["features", "--config", str(workdir / "synthetic.toml"), "--out", str(out)])
+    sessions = pl.read_parquet(out)["session"].unique().sort().to_list()
+    assert [str(d) for d in sessions] == ["2024-01-02", "2024-01-03"]

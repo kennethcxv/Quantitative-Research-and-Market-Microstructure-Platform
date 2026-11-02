@@ -10,6 +10,7 @@ Stages, each restartable from the run directory: run (select + predict) -> evalu
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import logging
@@ -54,6 +55,9 @@ class DataConfig(BaseModel):
     symbol: str
     dev_dates: tuple[str, str]
     test_dates: tuple[str, str]
+    # Knowledge time (ISO-8601, UTC): with version = "latest", use the newest version that had
+    # been imported by then. Lets an experiment be replayed with only the data known on a date.
+    as_of: str | None = None
 
 
 class EvalConfig(BaseModel):
@@ -63,6 +67,7 @@ class EvalConfig(BaseModel):
     block_len: int | None = None  # samples; None = 2 x max(horizon, longest window)
     n_null: int = 200
     regime_feature: str = "rv_30s"
+    significance: float = 0.01  # null p-value required (with a CI excluding 0) to call a signal
 
 
 class ModelGrid(BaseModel):
@@ -127,7 +132,13 @@ class Prepared:
 def prepare(cfg: ExperimentConfig) -> Prepared:
     """Load the pinned dataset version, rebuild the book and compute features."""
     catalog = Catalog(cfg.data.catalog)
-    manifest = catalog.resolve(cfg.data.dataset, cfg.data.version)
+    as_of_ns = None
+    if cfg.data.as_of is not None:
+        as_of = dt.datetime.fromisoformat(cfg.data.as_of)
+        if as_of.tzinfo is None:
+            as_of = as_of.replace(tzinfo=dt.UTC)
+        as_of_ns = int(as_of.timestamp() * 1e9)
+    manifest = catalog.resolve(cfg.data.dataset, cfg.data.version, as_of_ns)
     dates = sorted([*cfg.data.dev_dates, *cfg.data.test_dates])
     events = (
         catalog.scan(cfg.data.dataset, manifest.version, [cfg.data.symbol], (dates[0], dates[-1]))
@@ -158,20 +169,32 @@ def block_len(cfg: ExperimentConfig) -> int:
     return 2 * longest * 1000 // cfg.features.interval_ms
 
 
-def usable_rows(prep: Prepared, cfg: ExperimentConfig) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Development and test rows with a valid book, a label and every feature present."""
-    cols = [*prep.feature_names, "fwd_ret"]
+def _between(dates: tuple[str, str]) -> pl.Expr:
+    lo, hi = (pl.lit(d).str.to_date() for d in dates)
+    return pl.col("session").is_between(lo, hi)
+
+
+def complete_rows(prep: Prepared, cfg: ExperimentConfig) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Development and test rows with a valid book and every feature present, labelled or not.
+
+    These are the rows a live strategy could act on; the backtest uses them, so whether a
+    signal exists never depends on the future (a label needs the book to stay valid to t+h).
+    """
     complete = prep.features.filter(
         pl.col("valid")
-        & pl.all_horizontal(pl.col(c).is_not_null() & pl.col(c).is_finite() for c in cols)
+        & pl.all_horizontal(
+            pl.col(c).is_not_null() & pl.col(c).is_finite() for c in prep.feature_names
+        )
+    )
+    return complete.filter(_between(cfg.data.dev_dates)), complete.filter(
+        _between(cfg.data.test_dates)
     )
 
-    def between(dates: tuple[str, str]) -> pl.Expr:
-        lo, hi = (pl.lit(d).str.to_date() for d in dates)
-        return pl.col("session").is_between(lo, hi)
 
-    dev = complete.filter(between(cfg.data.dev_dates))
-    test = complete.filter(between(cfg.data.test_dates))
+def usable_rows(prep: Prepared, cfg: ExperimentConfig) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Complete rows that also have a label: what models are fitted and scored on."""
+    labelled = pl.col("fwd_ret").is_not_null() & pl.col("fwd_ret").is_finite()
+    dev, test = (frame.filter(labelled) for frame in complete_rows(prep, cfg))
     if dev.is_empty() or test.is_empty():
         raise ValueError("development or test period has no usable rows")
     dev_t, test_t = dev["t_ns"].to_numpy(), test["t_ns"].to_numpy()
@@ -234,6 +257,73 @@ def select_model(
     return chosen, table, oos_frame
 
 
+def walk_forward_signals(
+    dev: pl.DataFrame, dev_complete: pl.DataFrame, spec: ModelSpec, cfg: ExperimentConfig
+) -> pl.DataFrame:
+    """Out-of-sample forecasts for every complete development row from the first test block on.
+
+    Fold k's model (trained on admissible labelled rows before block k) forecasts all complete
+    rows from block k's start until block k+1's start, labelled or not.
+    """
+    folds = walk_forward(
+        dev["t_ns"].to_numpy(),
+        dev["label_end_ns"].to_numpy(),
+        cfg.evaluation.n_folds,
+        cfg.evaluation.embargo_s * NS,
+    )
+    x, y = design_matrix(dev, spec)
+    starts = [f.test_start_ns for f in folds] + [2**62]
+    parts = []
+    for k, fold in enumerate(folds):
+        model = fit(spec, x[fold.train], y[fold.train])
+        rows = dev_complete.filter(pl.col("t_ns").is_between(starts[k], starts[k + 1], "left"))
+        parts.append(rows.with_columns(pred=pl.Series(model.predict(design_matrix(rows, spec)[0]))))
+    return pl.concat(parts)
+
+
+class RunIntegrityError(RuntimeError):
+    """A run directory's config no longer matches what the run was executed with."""
+
+
+def load_run_config(run_dir: Path) -> ExperimentConfig:
+    """The run's config, refusing one edited after the run (which would let a re-scored stage
+    quietly change thresholds, costs or statistics without a new test evaluation)."""
+    text = (run_dir / "config.toml").read_text()
+    recorded = json.loads((run_dir / "manifest.json").read_text())["config_sha256"]
+    if hashlib.sha256(text.encode()).hexdigest() != recorded:
+        raise RunIntegrityError(f"{run_dir / 'config.toml'} was modified after the run")
+    cfg = ExperimentConfig.model_validate(tomllib.loads(text))
+    cfg.data.version = json.loads((run_dir / "manifest.json").read_text())["dataset"]["version"]
+    return cfg
+
+
+def record_test_access(
+    cfg: ExperimentConfig, manifest: DatasetManifest, run_dir: Path, config_sha256: str
+) -> int:
+    """Append to the dataset's test-access ledger; return earlier accesses to these dates.
+
+    The ledger lives in the catalog next to the data, so renaming the experiment or using a
+    different runs directory does not reset the count.
+    """
+    ledger = Path(cfg.data.catalog) / cfg.data.dataset / "test_access.jsonl"
+    lo, hi = cfg.data.test_dates
+    entries = (
+        [json.loads(line) for line in ledger.read_text().splitlines()] if ledger.exists() else []
+    )
+    prior = sum(1 for e in entries if e["test_dates"][0] <= hi and lo <= e["test_dates"][1])
+    entry = {
+        "at_ns": time.time_ns(),
+        "experiment": cfg.name,
+        "run": str(run_dir),
+        "config_sha256": config_sha256,
+        "dataset_version": manifest.version,
+        "test_dates": [lo, hi],
+    }
+    with ledger.open("a") as f:
+        f.write(json.dumps(entry) + "\n")
+    return prior
+
+
 def _git(*args: str) -> str:
     try:
         out = subprocess.run(["git", *args], capture_output=True, text=True, check=True)
@@ -269,9 +359,6 @@ def run(cfg: ExperimentConfig, config_text: str, runs_root: Path = Path("runs"))
     backtest. Returns the run directory."""
     started = time.time_ns()
     exp_dir = runs_root / cfg.name
-    prior = (
-        sorted(p.name for p in exp_dir.glob("*/predictions.parquet")) if exp_dir.exists() else []
-    )
     cfg_hash = hashlib.sha256(config_text.encode()).hexdigest()
     stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime(started / 1e9))
     run_dir = exp_dir / f"{stamp}.{started // 1_000_000 % 1000:03d}Z-{cfg_hash[:8]}"
@@ -280,11 +367,23 @@ def run(cfg: ExperimentConfig, config_text: str, runs_root: Path = Path("runs"))
 
     prep = prepare(cfg)
     dev, test = usable_rows(prep, cfg)
+    dev_complete, test_complete = complete_rows(prep, cfg)
     chosen, table, dev_oos = select_model(dev, cfg, prep.feature_names)
     x_dev, y_dev = design_matrix(dev, chosen)
     final: FittedModel = fit(chosen, x_dev, y_dev)
-    x_test, _ = design_matrix(test, chosen)  # the only line that reads test-period features
-    test_pred = test.with_columns(pred=pl.Series(final.predict(x_test)))
+    # Everything above used development data only. From here on the test period is read.
+    prior = record_test_access(cfg, prep.manifest, run_dir, cfg_hash)
+    test_pred = test.with_columns(pred=pl.Series(final.predict(design_matrix(test, chosen)[0])))
+    test_signals = test_complete.with_columns(
+        pred=pl.Series(final.predict(design_matrix(test_complete, chosen)[0]))
+    )
+    dev_signals = walk_forward_signals(dev, dev_complete, chosen, cfg)
+    pl.concat(
+        [
+            dev_signals.select("t_ns", "session", "pred").with_columns(split=pl.lit("dev_oos")),
+            test_signals.select("t_ns", "session", "pred").with_columns(split=pl.lit("test")),
+        ]
+    ).write_parquet(run_dir / "signals.parquet")
 
     keep = [
         "symbol",
@@ -328,6 +427,7 @@ def run(cfg: ExperimentConfig, config_text: str, runs_root: Path = Path("runs"))
                 "source": prep.manifest.source.model_dump(),
                 "capabilities": prep.manifest.capabilities.model_dump(),
                 "validation": prep.manifest.validation,
+                "duplicates_removed": prep.manifest.duplicates_removed,
             },
             "book": {**prep.book_stats.model_dump(), **prep.quote_checks},
             "features": {n: feature_docs(cfg.features)[n] for n in prep.feature_names},
@@ -338,7 +438,7 @@ def run(cfg: ExperimentConfig, config_text: str, runs_root: Path = Path("runs"))
                 "test": test.height,
             },
             "selected_model": chosen.name,
-            "test_evaluations_before_this_run": len(prior),
+            "test_evaluations_before_this_run": prior,
             "provenance": provenance(),
         },
     )
@@ -349,7 +449,7 @@ def run(cfg: ExperimentConfig, config_text: str, runs_root: Path = Path("runs"))
 
 
 def evaluate_run(run_dir: Path) -> dict[str, Any]:
-    cfg = load_config(run_dir / "config.toml")
+    cfg = load_run_config(run_dir)
     preds = pl.read_parquet(run_dir / "predictions.parquet")
     blen, ev = block_len(cfg), cfg.evaluation
     out: dict[str, Any] = {"block_len": blen}
@@ -414,16 +514,15 @@ def strategy_thresholds(cfg: ExperimentConfig, dev: pl.DataFrame) -> dict[str, f
 
 
 def backtest_run(run_dir: Path, prep: Prepared | None = None) -> dict[str, Any]:
-    cfg = load_config(run_dir / "config.toml")
+    cfg = load_run_config(run_dir)  # pins the dataset version the run used
     if prep is None:
-        manifest = json.loads((run_dir / "manifest.json").read_text())
-        cfg.data.version = manifest["dataset"]["version"]  # replay the exact version
         prep = prepare(cfg)
     preds = pl.read_parquet(run_dir / "predictions.parquet")
+    all_signals = pl.read_parquet(run_dir / "signals.parquet")
     rules = strategy_thresholds(cfg, preds.filter(pl.col("split") == "dev_oos"))
     out: dict[str, Any] = {"thresholds": rules, "results": {}}
     for split in ("dev_oos", "test"):
-        signals = preds.filter(pl.col("split") == split).select("t_ns", "session", "pred")
+        signals = all_signals.filter(pl.col("split") == split).select("t_ns", "session", "pred")
         t = signals["t_ns"].to_numpy()
         window = pl.col("available_time_ns").is_between(
             int(t.min()) - 3600 * NS, int(t.max()) + 3600 * NS

@@ -12,7 +12,7 @@ from typing import Any
 
 import polars as pl
 
-from qrp.experiment import load_config
+from qrp.experiment import load_run_config
 
 
 def _ci(x: dict[str, float], scale: float = 1.0, digits: int = 4) -> str:
@@ -45,7 +45,7 @@ def write_report(run_dir: Path) -> Path:
     controls_path = run_dir / "controls.json"
     controls = json.loads(controls_path.read_text()) if controls_path.exists() else None
     config = (run_dir / "config.toml").read_text()
-    cfg = load_config(run_dir / "config.toml")
+    cfg = load_run_config(run_dir)
     ds = manifest["dataset"]
     source, caps = ds["source"], ds["capabilities"]
     test, dev = metrics["test"], metrics["dev_oos"]
@@ -76,6 +76,7 @@ def write_report(run_dir: Path) -> Path:
             ", ".join(f"{w['name']}={w['violations']}" for w in ds["validation"]["warnings"])
             or "none"
         ),
+        f"* Duplicate rows removed at import: {ds.get('duplicates_removed', 'n/a')}",
         f"* Book reconstruction: {manifest['book']}",
         f"* Rows: {manifest['rows']}",
         "",
@@ -129,7 +130,10 @@ def write_report(run_dir: Path) -> Path:
                     f"{m['calibration_slope']:.3f}",
                     f"{m['null_p_value']:.3f}",
                 ]
-                for name, m in (("dev walk-forward", dev), ("test (once)", test))
+                for name, m in (
+                    ("dev walk-forward (selected model; optimistic)", dev),
+                    ("test (once)", test),
+                )
             ],
         ),
         "",
@@ -236,13 +240,13 @@ def write_report(run_dir: Path) -> Path:
     t_ci = cost["pnl_per_minute_mean_ci"]
     if cost["fills"]:
         trading = (
-            f"* Cost-rule strategy net simulated P&L on test positive: "
-            f"{_yes(cost['pnl_total'] > 0)}; per-minute mean CI excludes 0: "
-            f"{_yes(bool(t_ci) and (t_ci['low'] > 0 or t_ci['high'] < 0))}"
+            "* Tradeable (cost-rule strategy's per-minute net P&L CI entirely above 0): "
+            f"{_yes(bool(t_ci) and t_ci['low'] > 0)}; net simulated P&L on test "
+            f"{cost['pnl_total']:.2f}"
         )
     else:
         trading = (
-            "* Cost-rule strategy did not trade on test: the largest forecast "
+            "* Tradeable: no. The cost-rule strategy did not trade on test: the largest forecast "
             f"({cost['max_abs_forecast']:.2e}) never exceeded the cost threshold "
             f"({backtest['thresholds']['cost_rule']:.2e})"
         )
@@ -256,9 +260,11 @@ def write_report(run_dir: Path) -> Path:
     out += [
         "## Conclusions (mechanical)",
         "",
-        f"* Test rank IC distinguishable from zero (CI excludes 0): "
-        f"{_yes(test['rank_ic']['low'] > 0 or test['rank_ic']['high'] < 0)}",
-        f"* Beats the zero forecast on test squared error (R² CI above 0): "
+        f"* Signal exists (test rank IC CI excludes 0 and null p < "
+        f"{cfg.evaluation.significance}): "
+        f"{_yes(test['rank_ic']['low'] > 0 or test['rank_ic']['high'] < 0)}"
+        f" and {_yes(test['null_p_value'] < cfg.evaluation.significance)}",
+        f"* Usable (beats the zero forecast: test OOS R² CI entirely above 0): "
         f"{_yes(test['oos_r2']['low'] > 0)}",
         trading,
         *diagnostic,

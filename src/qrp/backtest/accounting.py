@@ -62,7 +62,8 @@ class Ledger:
     def check(self) -> None:
         """Recompute position and cash from the fill list; they must match the running state.
 
-        O(fills), so the engine calls it at session ends rather than after every fill."""
+        O(fills), so the engine calls it once at the end of a run; every fill is still checked
+        against the touch and the position limit as it is applied."""
         pos = sum(f.side * f.qty for f in self.fills)
         cash = self.initial_cash - sum(f.side * f.qty * f.price + f.fee for f in self.fills)
         scale = max(1.0, abs(self.initial_cash))

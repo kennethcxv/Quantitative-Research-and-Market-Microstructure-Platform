@@ -9,6 +9,8 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+import polars as pl
+
 from qrp import adapters, experiment, log
 from qrp.catalog import Catalog, ValidationFailed
 from qrp.synth import SynthConfig, generate, synthetic_capabilities, synthetic_source
@@ -85,9 +87,17 @@ def cmd_validate(a: argparse.Namespace) -> None:
 
 def cmd_features(a: argparse.Namespace) -> None:
     cfg = experiment.load_config(Path(a.config))
-    prep = experiment.prepare(cfg)
-    prep.features.write_parquet(a.out)
-    logger.info("wrote features", extra={"path": a.out, "rows": prep.features.height})
+    features = experiment.prepare(cfg).features
+    if not a.include_test:
+        # Exploration happens on development data; writing test-period labels to disk is
+        # exactly the kind of uncounted peek the holdout discipline exists to prevent.
+        lo, hi = (pl.lit(d).str.to_date() for d in cfg.data.dev_dates)
+        features = features.filter(pl.col("session").is_between(lo, hi))
+    features.write_parquet(a.out)
+    logger.info(
+        "wrote features",
+        extra={"path": a.out, "rows": features.height, "include_test": a.include_test},
+    )
 
 
 def cmd_run(a: argparse.Namespace) -> None:
@@ -173,6 +183,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     p = sub.add_parser("features", help="compute the feature table for a config")
     p.add_argument("--config", required=True)
     p.add_argument("--out", required=True)
+    p.add_argument(
+        "--include-test", action="store_true", help="also write test-period rows (not counted)"
+    )
     p.set_defaults(func=cmd_features)
 
     p = sub.add_parser("run", help="select, test once, evaluate, backtest and report")

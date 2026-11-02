@@ -22,13 +22,13 @@ from qrp.experiment import (
     Prepared,
     block_len,
     design_matrix,
-    load_config,
+    load_run_config,
     prepare,
     select_model,
     strategy_thresholds,
     usable_rows,
 )
-from qrp.features import build_features
+from qrp.features import available_time, build_features
 from qrp.models import ModelSpec, fit
 from qrp.splits import walk_forward
 from qrp.stats import evaluate, rank_ic
@@ -64,27 +64,31 @@ def truncation_violations(
     prep: Prepared,
     cfg: ExperimentConfig,
     extra: Callable[[pl.DataFrame], pl.DataFrame] = lambda f: f,
+    cuts: tuple[float, ...] = (0.25, 0.5, 0.75),
 ) -> list[str]:
-    """Columns whose values at t <= cut change when events after cut are deleted."""
+    """Columns whose values at t <= T change when every event *available* after T is deleted.
+
+    Truncation uses the availability clock (receive time plus configured latency, or the
+    assumed latency), so a leak shorter than the latency cannot hide in the gap between the
+    raw timestamp and the research clock. Several cut points within the first session.
+    """
     session = prep.features["session"].min()
-    day = prep.events.filter(
-        pl.from_epoch(pl.coalesce("recv_time_ns", "event_time_ns"), time_unit="ns").dt.date()
-        == session
-    )
     caps = prep.manifest.capabilities
+    events = prep.events.with_columns(available_time(caps, cfg.timing))
     full = extra(prep.features.filter(pl.col("session") == session))
-    cut = int(full["t_ns"][full.height // 2])
-    clock = pl.coalesce("recv_time_ns", "event_time_ns")
-    truncated = extra(build_features(day.filter(clock <= cut), caps, cfg.features, cfg.timing))
-    head = full.head(truncated.height)
     columns = [c for c in full.columns if c not in ("fwd_ret", "label_end_ns")]
-    return [c for c in columns if not head[c].equals(truncated[c])]
+    flagged: set[str] = set()
+    for fraction in cuts:
+        cut = int(full["t_ns"][int(full.height * fraction)])
+        kept = events.filter(pl.col("available_time_ns") <= cut).drop("available_time_ns")
+        truncated = extra(build_features(kept, caps, cfg.features, cfg.timing))
+        head = full.head(truncated.height)
+        flagged |= {c for c in columns if not head[c].equals(truncated[c])}
+    return sorted(flagged)
 
 
 def run_controls(run_dir: Path) -> list[dict[str, Any]]:
-    cfg = load_config(run_dir / "config.toml")
-    manifest = json.loads((run_dir / "manifest.json").read_text())
-    cfg.data.version = manifest["dataset"]["version"]
+    cfg = load_run_config(run_dir)
     prep = prepare(cfg)
     dev, test = usable_rows(prep, cfg)
     names = prep.feature_names
@@ -170,7 +174,11 @@ def run_controls(run_dir: Path) -> list[dict[str, Any]]:
 
     # 6-7. Execution controls on the test period.
     preds = pl.read_parquet(run_dir / "predictions.parquet")
-    signals = preds.filter(pl.col("split") == "test").select("t_ns", "session", "pred")
+    signals = (
+        pl.read_parquet(run_dir / "signals.parquet")
+        .filter(pl.col("split") == "test")
+        .select("t_ns", "session", "pred")
+    )
     t = signals["t_ns"].to_numpy()
     lo, hi = int(t.min()), int(t.max())
     window = pl.col("available_time_ns").is_between(lo - 3600 * NS, hi + 3600 * NS)

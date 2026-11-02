@@ -6,7 +6,14 @@ import polars as pl
 import pytest
 from conftest import MS, T0, events
 
-from qrp.features import FeatureConfig, FeatureError, TimingConfig, build_features, select_features
+from qrp.features import (
+    FeatureConfig,
+    FeatureError,
+    TimingConfig,
+    available_time,
+    build_features,
+    select_features,
+)
 from qrp.schemas import Capabilities, StreamInfo
 from qrp.synth import SynthConfig, generate, synthetic_capabilities
 
@@ -120,21 +127,24 @@ def test_unsupported_features_are_refused() -> None:
         select_features(FeatureConfig(names=["alpha_magic"]), CAPS)
 
 
-def test_features_are_invariant_to_truncating_the_future() -> None:
-    """Causality: values at t <= T must not change when data after T is deleted."""
+@pytest.mark.parametrize("extra_latency_ms", [0.0, 250.0])
+def test_features_are_invariant_to_truncating_the_future(extra_latency_ms: float) -> None:
+    """Causality: values at t <= T must not change when data available after T is deleted."""
     feed = generate(SynthConfig(n_days=1, session_seconds=1200, seed=5))
-    cfg = FeatureConfig(warmup_s=10)
-    full = build_features(feed, synthetic_capabilities(), cfg, TimingConfig())
-    cut = full["t_ns"][len(full) // 2]
-    truncated = build_features(
-        feed.filter(pl.col("recv_time_ns") <= cut), synthetic_capabilities(), cfg, TimingConfig()
-    )
-    # The grid ends at the session's last quote, so the truncated grid may stop a point or two
-    # earlier; it must be a prefix of the full grid, with identical values on every point.
-    past = truncated.drop("fwd_ret", "label_end_ns")
-    assert past.height > 500
-    assert past.equals(full.head(past.height).drop("fwd_ret", "label_end_ns"))
-    assert full.filter(pl.col("t_ns") <= cut).height - past.height <= 1
+    caps, cfg = synthetic_capabilities(), FeatureConfig(warmup_s=10)
+    timing = TimingConfig(extra_latency_ms=extra_latency_ms)
+    full = build_features(feed, caps, cfg, timing)
+    with_clock = feed.with_columns(available_time(caps, timing))
+    for fraction in (0.3, 0.6):
+        cut = full["t_ns"][int(len(full) * fraction)]
+        kept = with_clock.filter(pl.col("available_time_ns") <= cut).drop("available_time_ns")
+        truncated = build_features(kept, caps, cfg, timing)
+        # The grid ends at the session's last quote, so the truncated grid may stop a point
+        # earlier; it must be a prefix of the full grid with identical values on every point.
+        past = truncated.drop("fwd_ret", "label_end_ns")
+        assert past.height > 300
+        assert past.equals(full.head(past.height).drop("fwd_ret", "label_end_ns"))
+        assert full.filter(pl.col("t_ns") <= cut).height - past.height <= 1
 
 
 def test_invalid_book_rows_have_no_mid_or_label() -> None:
