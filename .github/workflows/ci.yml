@@ -21,3 +21,7 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy src
       - run: uv run pytest
+      # The synthetic end-to-end demo from a clean checkout: generate, import, validate,
+      # experiment with negative controls, report. Fails if any control fails to run.
+      - run: scripts/demo.sh
+      - run: test "$(jq '[.[] | select(.passed | not)] | length' runs/synthetic_imbalance/*/controls.json)" = 0
