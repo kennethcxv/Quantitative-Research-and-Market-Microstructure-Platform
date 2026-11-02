@@ -115,6 +115,7 @@ def load_config(path: Path) -> ExperimentConfig:
 @dataclass
 class Prepared:
     manifest: DatasetManifest
+    events: pl.DataFrame
     quotes: pl.DataFrame
     features: pl.DataFrame
     feature_names: list[str]
@@ -137,7 +138,8 @@ def prepare(cfg: ExperimentConfig) -> Prepared:
     caps = manifest.capabilities
     quotes, stats = book_quotes(events, caps, cfg.timing, cfg.features.depth_levels)
     features = build_features(events, caps, cfg.features, cfg.timing, quotes=quotes)
-    return Prepared(manifest, quotes, features, select_features(cfg.features, caps), stats)
+    names = select_features(cfg.features, caps)
+    return Prepared(manifest, events, quotes, features, names, stats)
 
 
 def block_len(cfg: ExperimentConfig) -> int:
@@ -261,7 +263,8 @@ def run(cfg: ExperimentConfig, config_text: str, runs_root: Path = Path("runs"))
         sorted(p.name for p in exp_dir.glob("*/predictions.parquet")) if exp_dir.exists() else []
     )
     cfg_hash = hashlib.sha256(config_text.encode()).hexdigest()
-    run_dir = exp_dir / f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{cfg_hash[:8]}"
+    stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime(started / 1e9))
+    run_dir = exp_dir / f"{stamp}.{started // 1_000_000 % 1000:03d}Z-{cfg_hash[:8]}"
     run_dir.mkdir(parents=True)
     (run_dir / "config.toml").write_text(config_text)
 

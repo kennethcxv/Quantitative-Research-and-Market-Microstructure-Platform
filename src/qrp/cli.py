@@ -91,10 +91,15 @@ def cmd_features(a: argparse.Namespace) -> None:
 
 
 def cmd_run(a: argparse.Namespace) -> None:
-    path = Path(a.config)
-    run_dir = experiment.run(experiment.load_config(path), path.read_text(), Path(a.runs))
+    from qrp.controls import run_controls
     from qrp.report import write_report
 
+    path = Path(a.config)
+    run_dir = experiment.run(experiment.load_config(path), path.read_text(), Path(a.runs))
+    if not a.no_controls:
+        failed = [c["name"] for c in run_controls(run_dir) if not c["passed"]]
+        if failed:
+            logger.warning("negative controls failed", extra={"controls": failed})
     print(write_report(run_dir))
 
 
@@ -173,6 +178,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     p = sub.add_parser("run", help="select, test once, evaluate, backtest and report")
     p.add_argument("--config", required=True)
     p.add_argument("--runs", default="runs")
+    p.add_argument("--no-controls", action="store_true", help="skip negative controls")
     p.set_defaults(func=cmd_run)
 
     for name, func, text in (
