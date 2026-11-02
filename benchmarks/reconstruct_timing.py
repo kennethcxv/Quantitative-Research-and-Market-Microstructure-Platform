@@ -5,6 +5,7 @@ Usage: uv run python benchmarks/reconstruct_timing.py <dataset> [symbol] [repeat
 
 from __future__ import annotations
 
+import resource
 import statistics
 import sys
 import time
@@ -28,14 +29,19 @@ events = (
 book_stream = events.filter(pl.col("kind") != "trade")["stream"][0]
 rows = events.filter(pl.col("stream") == book_stream)
 sequencing = {k: v.sequencing for k, v in manifest.capabilities.streams.items()}
+rss_before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 times = []
 for _ in range(repeats):
     t0 = time.perf_counter()
     quotes, stats = reconstruct(rows, sequencing, levels=5)
     times.append(time.perf_counter() - t0)
 median = statistics.median(times)
+rss_after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+unit = 1 if sys.platform == "darwin" else 1024  # ru_maxrss: bytes on macOS, KiB on Linux
 print(
     f"{name}: {rows.height} rows, {stats.messages} messages, "
     f"median {median:.2f}s ({[round(t, 2) for t in times]}), "
-    f"{rows.height / median / 1e6:.2f} M rows/s, quotes hash {quotes.hash_rows().sum()}"
+    f"{rows.height / median / 1e6:.2f} M rows/s, "
+    f"peak RSS +{(rss_after - rss_before) * unit / 2**20:.0f} MB over the loaded input, "
+    f"quotes hash {quotes.hash_rows().sum()}"
 )

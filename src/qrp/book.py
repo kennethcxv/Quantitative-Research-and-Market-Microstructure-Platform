@@ -15,6 +15,7 @@ the same source representation; it would not be safe for prices computed by arit
 from __future__ import annotations
 
 import bisect
+from array import array
 from collections.abc import Mapping
 
 import numpy as np
@@ -71,7 +72,7 @@ def reconstruct(
     # numpy scalar per access and was the other half of the cost.
     starts = starts_np.tolist()
     ends = [*starts[1:], len(seq_np)]
-    seq = seq_np.tolist()
+    message_seq = seq_np[starts_np].tolist()  # only message starts: a per-row list costs ~300 MB
     is_trade = (kind == TRADE).tolist()
     side = rows["side"].to_list()
     price = rows["price"].to_list()
@@ -80,7 +81,9 @@ def reconstruct(
     size_at: dict[int, dict[float, float]] = {1: {}, -1: {}}
     prices: dict[int, list[float]] = {1: [], -1: []}  # ascending
     nan = float("nan")
-    out: list[list[float]] = []
+    # Ladder values go into a flat C-double buffer: a list of Python float lists costs ~4x the
+    # memory (measured +620 MB peak on 1.3 M messages) for no speed benefit.
+    out = array("d")
     synced_out: list[bool] = []
     crossed_out: list[bool] = []
     emitted: list[int] = []
@@ -90,10 +93,10 @@ def reconstruct(
 
     for m in range(len(starts)):
         lo, hi = starts[m], ends[m]
-        if check_gaps and prev_seq is not None and seq[lo] != prev_seq + 1:
+        if check_gaps and prev_seq is not None and message_seq[m] != prev_seq + 1:
             synced = False
             stats["gaps"] += 1
-        prev_seq = seq[lo]
+        prev_seq = message_seq[m]
         if all_trade[m]:
             continue
         snapshot = has_snapshot[m]
@@ -130,7 +133,7 @@ def reconstruct(
             p = asks[i]
             row[4 * i + 2] = p
             row[4 * i + 3] = ask_sizes[p]
-        out.append(row)
+        out.extend(row)
         synced_out.append(synced)
         crossed_out.append(bool(bids and asks and bids[-1] >= asks[0]))
         emitted.append(lo)
@@ -148,7 +151,7 @@ def reconstruct(
         .select("symbol", "stream", "seq", "event_time_ns", "recv_time_ns")
     )
     ladder = pl.DataFrame(
-        np.array(out, dtype=np.float64).reshape(len(out), 4 * levels),
+        np.frombuffer(out, dtype=np.float64).reshape(len(emitted), 4 * levels),
         schema=ladder_columns(levels),
         orient="row",
     )
