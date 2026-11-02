@@ -144,3 +144,36 @@ def test_invalid_book_rows_have_no_mid_or_label() -> None:
     assert invalid.height > 0  # the injected packet loss
     assert invalid["mid"].null_count() == invalid.height
     assert invalid["fwd_ret"].null_count() == invalid.height
+
+
+def test_out_of_order_exchange_times_cannot_leak_book_state() -> None:
+    # No receive times; message 3 has an earlier exchange time than message 2. The state after
+    # message 3 includes message 2, so it must not be visible before message 2 is (2.601 s).
+    caps = CAPS.model_copy(update={"recv_time": "absent", "has_trades": False})
+    feed = events(
+        [
+            (1, 0, "snapshot", 1, 99, 3),
+            (1, 0, "snapshot", -1, 101, 3),
+            (2, 2600, "book", 1, 99, 9),
+            (3, 1500, "book", -1, 101, 4),
+            (4, 3500, "book", -1, 101, 5),
+        ],
+        recv=False,
+    )
+    cfg = SMALL.model_copy(update={"windows_s": [1], "depth_levels": 1})
+    f = build_features(feed, caps, cfg, TimingConfig(assumed_feed_latency_ms=1))
+    by_second = {(t - T0) // (S * MS): v for t, v in zip(f["t_ns"], f["imbalance_l1"], strict=True)}
+    assert by_second[2] == pytest.approx(0.0)  # only the snapshot is known at t = 2 s
+    assert by_second[3] == pytest.approx((9 - 4) / 13)
+
+
+def test_one_sided_book_is_invalid_and_does_not_poison_order_flow() -> None:
+    rows = [(1, 0, "snapshot", 1, 99, 3), (1, 0, "snapshot", -1, 101, 1)]
+    rows += [(2, 1500, "book", -1, 101, 0), (3, 1600, "book", 1, 99, 4)]  # asks empty
+    rows += [(4, 2500, "book", -1, 101, 2)]  # asks return
+    rows += [(k, 1000 * k, "book", 1, 99, 3 + k % 2) for k in range(5, 12)]
+    f = build_features(events(rows), CAPS, SMALL, TimingConfig())
+    one_sided = f.filter(pl.col("t_ns") == T0 + 2 * S * MS)
+    assert not one_sided["valid"][0] and one_sided["mid"][0] is None
+    later = f.filter(pl.col("t_ns") >= T0 + 5 * S * MS)
+    assert later["valid"].all() and later["ofi_2s"].is_finite().all()

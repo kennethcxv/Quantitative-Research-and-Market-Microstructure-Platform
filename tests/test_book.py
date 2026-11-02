@@ -167,3 +167,10 @@ def test_matches_naive_reference(messages: list[list[tuple[int, float, float]]])
         applied.extend(msg)
         got = np.array(quotes.row(i + 1)[5 : 5 + 12], dtype=float)
         np.testing.assert_array_equal(got, _reference_top(applied, 3))
+
+
+def test_message_carries_the_time_of_its_last_row() -> None:
+    df = events([(1, 0, "snapshot", 1, 99.0, 1), (1, 5, "snapshot", -1, 101.0, 1)])
+    quotes, _ = reconstruct(df, CONTIGUOUS)
+    assert quotes["recv_time_ns"][0] == df["recv_time_ns"].max()
+    assert quotes["event_time_ns"][0] == df["event_time_ns"].max()

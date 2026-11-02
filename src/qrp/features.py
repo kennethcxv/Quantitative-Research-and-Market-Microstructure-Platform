@@ -143,9 +143,14 @@ def book_quotes(
     sequencing = {k: v.sequencing for k, v in caps.streams.items()}
     n_levels = min(levels, caps.book_depth or levels)
     quotes, stats = reconstruct(events, sequencing, levels=n_levels)
+    # Each row is the cumulative state after all messages up to it, so it becomes available only
+    # once every one of those messages is: the running maximum in message order. Without this,
+    # out-of-order exchange times (when there are no receive times) would let a state appear
+    # before a message it already includes.
     quotes = (
         quotes.with_columns(available_time(caps, timing))
         .filter(pl.col("available_time_ns").is_not_null())
+        .with_columns(pl.col("available_time_ns").cum_max())
         .sort("available_time_ns", maintain_order=True)
     )
     return quotes, stats
@@ -176,7 +181,10 @@ def build_features(
     b, a = pl.col("bid_px_0"), pl.col("ask_px_0")
     qb, qa = pl.col("bid_sz_0"), pl.col("ask_sz_0")
     quotes = quotes.with_columns(_session("available_time_ns")).with_columns(
-        quote_ok=pl.col("synced") & ~pl.col("crossed") & b.is_not_null() & a.is_not_null(),
+        # Empty ladder levels are NaN, not null: a one-sided book is not a usable quote.
+        quote_ok=(
+            pl.col("synced") & ~pl.col("crossed") & b.is_not_nan() & a.is_not_nan()
+        ).fill_null(False),
         mid=(a + b) / 2,
     )
     prev = {

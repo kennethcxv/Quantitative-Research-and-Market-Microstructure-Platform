@@ -139,7 +139,14 @@ def reconstruct(
     stats["unsynced_messages"] = len(synced_out) - sum(synced_out)
     stats["crossed_messages"] = sum(crossed_out)
 
-    heads = rows[emitted].select("symbol", "stream", "seq", "event_time_ns", "recv_time_ns")
+    # A message is complete only when its last row has arrived, so it carries the latest
+    # timestamps of its rows (a snapshot can span several arrivals).
+    message = np.cumsum(np.r_[True, seq_np[1:] != seq_np[:-1]])
+    heads = (
+        rows.with_columns(_message=pl.Series(message))
+        .with_columns(pl.col("event_time_ns", "recv_time_ns").max().over("_message"))[emitted]
+        .select("symbol", "stream", "seq", "event_time_ns", "recv_time_ns")
+    )
     ladder = pl.DataFrame(
         np.array(out, dtype=np.float64).reshape(len(out), 4 * levels),
         schema=ladder_columns(levels),
