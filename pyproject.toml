@@ -21,7 +21,14 @@ bench = ["pandas>=2.2"]
 qrp = "qrp.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "pandas>=2.2", "pandas-stubs>=2.2"]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pandas>=2.2",
+    "pandas-stubs>=2.2",
+    "hypothesis>=6.170.14",
+]
 
 [build-system]
 requires = ["hatchling"]
