@@ -59,35 +59,45 @@ def reconstruct(
     rows = events.filter(pl.col("stream") == stream)
     check_gaps = sequencing[stream] == "contiguous"
 
-    seq = rows["seq"].to_numpy()
+    seq_np = rows["seq"].to_numpy()
     kind = rows["kind"].to_numpy()
-    is_trade = kind == TRADE
-    is_snapshot = kind == SNAPSHOT
-    side = rows["side"].to_numpy()
+    # Message boundaries: first row of every run of equal seq.
+    starts_np = np.flatnonzero(np.r_[True, seq_np[1:] != seq_np[:-1]])
+    # Per-message flags computed once, vectorised: calling numpy on millions of tiny slices
+    # inside the loop cost ~2.5 s per 1.3 M messages in profiling.
+    all_trade = np.logical_and.reduceat(kind == TRADE, starts_np).tolist()
+    has_snapshot = np.logical_or.reduceat(kind == SNAPSHOT, starts_np).tolist()
+    # The loop reads plain Python lists: indexing numpy arrays element by element allocates a
+    # numpy scalar per access and was the other half of the cost.
+    starts = starts_np.tolist()
+    ends = [*starts[1:], len(seq_np)]
+    seq = seq_np.tolist()
+    is_trade = (kind == TRADE).tolist()
+    side = rows["side"].to_list()
     price = rows["price"].to_list()
     size = rows["size"].to_list()
-    # Message boundaries: first row of every run of equal seq.
-    starts = np.flatnonzero(np.r_[True, seq[1:] != seq[:-1]])
-    ends = np.r_[starts[1:], len(seq)]
 
     size_at: dict[int, dict[float, float]] = {1: {}, -1: {}}
     prices: dict[int, list[float]] = {1: [], -1: []}  # ascending
-    out = np.full((len(starts), 4 * levels), np.nan)
-    synced_out = np.zeros(len(starts), dtype=bool)
-    crossed_out = np.zeros(len(starts), dtype=bool)
-    emitted = np.zeros(len(starts), dtype=bool)
+    nan = float("nan")
+    out: list[list[float]] = []
+    synced_out: list[bool] = []
+    crossed_out: list[bool] = []
+    emitted: list[int] = []
     synced = False
     stats = dict.fromkeys(BookStats.model_fields, 0)
     prev_seq: int | None = None
 
-    for m, (lo, hi) in enumerate(zip(starts, ends, strict=True)):
+    for m in range(len(starts)):
+        lo, hi = starts[m], ends[m]
         if check_gaps and prev_seq is not None and seq[lo] != prev_seq + 1:
             synced = False
             stats["gaps"] += 1
-        prev_seq = int(seq[lo])
-        if is_trade[lo:hi].all():
+        prev_seq = seq[lo]
+        if all_trade[m]:
             continue
-        if is_snapshot[lo:hi].any():
+        snapshot = has_snapshot[m]
+        if snapshot:
             for s in (1, -1):
                 size_at[s].clear()
                 prices[s].clear()
@@ -97,7 +107,7 @@ def reconstruct(
         for r in range(lo, hi):
             if is_trade[r]:
                 continue
-            s, p, q = int(side[r]), price[r], size[r]
+            s, p, q = side[r], price[r], size[r]
             levels_s, prices_s = size_at[s], prices[s]
             if q > 0:
                 if p not in levels_s:
@@ -106,31 +116,35 @@ def reconstruct(
             elif p in levels_s:
                 del levels_s[p]
                 del prices_s[bisect.bisect_left(prices_s, p)]
-            elif not is_snapshot[r]:
+            elif not snapshot:
                 stats["deletes_of_unknown_level"] += 1
 
         bids, asks = prices[1], prices[-1]
-        row = out[m]
+        bid_sizes, ask_sizes = size_at[1], size_at[-1]
+        row = [nan] * (4 * levels)
         for i in range(min(levels, len(bids))):
             p = bids[-1 - i]
             row[4 * i] = p
-            row[4 * i + 1] = size_at[1][p]
+            row[4 * i + 1] = bid_sizes[p]
         for i in range(min(levels, len(asks))):
             p = asks[i]
             row[4 * i + 2] = p
-            row[4 * i + 3] = size_at[-1][p]
-        synced_out[m] = synced
-        crossed_out[m] = bool(bids and asks and bids[-1] >= asks[0])
-        emitted[m] = True
+            row[4 * i + 3] = ask_sizes[p]
+        out.append(row)
+        synced_out.append(synced)
+        crossed_out.append(bool(bids and asks and bids[-1] >= asks[0]))
+        emitted.append(lo)
 
-    starts, out = starts[emitted], out[emitted]
-    synced_out, crossed_out = synced_out[emitted], crossed_out[emitted]
-    stats["messages"] = len(starts)
-    stats["unsynced_messages"] = int((~synced_out).sum())
-    stats["crossed_messages"] = int(crossed_out.sum())
+    stats["messages"] = len(emitted)
+    stats["unsynced_messages"] = len(synced_out) - sum(synced_out)
+    stats["crossed_messages"] = sum(crossed_out)
 
-    heads = rows[starts.tolist()].select("symbol", "stream", "seq", "event_time_ns", "recv_time_ns")
-    ladder = pl.DataFrame(out, schema=ladder_columns(levels), orient="row")
+    heads = rows[emitted].select("symbol", "stream", "seq", "event_time_ns", "recv_time_ns")
+    ladder = pl.DataFrame(
+        np.array(out, dtype=np.float64).reshape(len(out), 4 * levels),
+        schema=ladder_columns(levels),
+        orient="row",
+    )
     quotes = pl.concat([heads, ladder], how="horizontal").with_columns(
         synced=pl.Series(synced_out), crossed=pl.Series(crossed_out)
     )
