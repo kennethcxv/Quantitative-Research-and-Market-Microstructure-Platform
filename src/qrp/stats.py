@@ -112,14 +112,23 @@ def evaluate(pred: FloatArray, y: FloatArray, block_len: int, n_boot: int, seed:
 
 
 def calibration_table(pred: FloatArray, y: FloatArray, bins: int = 10) -> pl.DataFrame:
-    """Mean outcome by forecast decile. A calibrated forecast has mean_y close to mean_pred."""
-    df = pl.DataFrame({"pred": pred, "y": y}).with_columns(
-        bin=(pl.col("pred").rank("ordinal") * bins / (pl.len() + 1)).floor().cast(pl.Int32)
-    )
-    return (
-        df.group_by("bin")
-        .agg(n=pl.len(), mean_pred=pl.col("pred").mean(), mean_y=pl.col("y").mean())
-        .sort("bin")
+    """Mean outcome by forecast decile. A calibrated forecast has mean_y close to mean_pred.
+
+    Computed with numpy rather than a polars group-by: multithreaded aggregation does not fix
+    the floating-point summation order, and run outputs must be bit-for-bit reproducible.
+    """
+    order = np.argsort(pred, kind="stable")
+    bin_of = np.empty(len(pred), dtype=np.int64)
+    bin_of[order] = np.arange(1, len(pred) + 1) * bins // (len(pred) + 1)
+    n = np.bincount(bin_of, minlength=bins)
+    present = n > 0
+    return pl.DataFrame(
+        {
+            "bin": np.flatnonzero(present).astype(np.int32),
+            "n": n[present],
+            "mean_pred": np.bincount(bin_of, pred, bins)[present] / n[present],
+            "mean_y": np.bincount(bin_of, y, bins)[present] / n[present],
+        }
     )
 
 
