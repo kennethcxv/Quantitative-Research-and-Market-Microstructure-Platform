@@ -230,8 +230,8 @@ def _window_polars(d: Path, meta: Meta) -> Meta:
     import polars as pl
 
     trades = pl.read_parquet(d / "trades.parquet").with_columns(cum=pl.col("size").cum_sum())
-    start = (int(trades["t"].min()) // STEP + 1) * STEP  # type: ignore[arg-type]
-    end = int(trades["t"].max())  # type: ignore[arg-type]
+    times = trades["t"].to_numpy()
+    start, end = (int(times.min()) // STEP + 1) * STEP, int(times.max())
     grid = pl.DataFrame({"g": pl.int_range(start, end, STEP, eager=True)})
     cum = trades.select("t", "cum")
     upper = grid.join_asof(cum, left_on="g", right_on="t")["cum"].fill_null(0)

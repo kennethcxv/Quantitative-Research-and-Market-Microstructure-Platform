@@ -20,8 +20,8 @@ from qrp.backtest import BookTimeline, run_backtest, threshold_target
 from qrp.experiment import (
     ExperimentConfig,
     Prepared,
-    _xy,
     block_len,
+    design_matrix,
     load_config,
     prepare,
     select_model,
@@ -45,8 +45,8 @@ def _test_ic(
 ) -> tuple[str, Any]:
     """Test-period rank IC of the model walk-forward selects, or of ``forced`` refit on dev."""
     chosen = forced or select_model(dev, cfg, names)[0]
-    model = fit(chosen, *_xy(dev, chosen))
-    pred = model.predict(_xy(test, chosen)[0])
+    model = fit(chosen, *design_matrix(dev, chosen))
+    pred = model.predict(design_matrix(test, chosen)[0])
     y = test["fwd_ret"].to_numpy()
     return chosen.name, evaluate(pred, y, block_len(cfg), cfg.evaluation.n_boot, cfg.seed).rank_ic
 
@@ -171,7 +171,8 @@ def run_controls(run_dir: Path) -> list[dict[str, Any]]:
     # 6-7. Execution controls on the test period.
     preds = pl.read_parquet(run_dir / "predictions.parquet")
     signals = preds.filter(pl.col("split") == "test").select("t_ns", "session", "pred")
-    lo, hi = int(signals["t_ns"].min()), int(signals["t_ns"].max())  # type: ignore[arg-type]
+    t = signals["t_ns"].to_numpy()
+    lo, hi = int(t.min()), int(t.max())
     window = pl.col("available_time_ns").is_between(lo - 3600 * NS, hi + 3600 * NS)
     book = BookTimeline.from_quotes(prep.quotes.filter(window))
     rules = strategy_thresholds(cfg, preds.filter(pl.col("split") == "dev_oos"))

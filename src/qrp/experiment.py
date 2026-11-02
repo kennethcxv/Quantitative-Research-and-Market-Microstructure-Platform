@@ -174,15 +174,16 @@ def usable_rows(prep: Prepared, cfg: ExperimentConfig) -> tuple[pl.DataFrame, pl
     test = complete.filter(between(cfg.data.test_dates))
     if dev.is_empty() or test.is_empty():
         raise ValueError("development or test period has no usable rows")
-    if test["t_ns"].min() <= dev["t_ns"].max():  # type: ignore[operator]
+    dev_t, test_t = dev["t_ns"].to_numpy(), test["t_ns"].to_numpy()
+    if test_t.min() <= dev_t.max():
         raise ValueError("test period must start after the development period ends")
-    test_start = int(test["t_ns"].min())  # type: ignore[arg-type]
+    test_start = int(test_t.min())
     embargo = cfg.evaluation.embargo_s * NS
     keep = admissible(dev["label_end_ns"].to_numpy(), test_start, embargo)
     return dev.filter(pl.Series(keep)), test
 
 
-def _xy(df: pl.DataFrame, spec: ModelSpec) -> tuple[np.ndarray, np.ndarray]:
+def design_matrix(df: pl.DataFrame, spec: ModelSpec) -> tuple[np.ndarray, np.ndarray]:
     x = df.select(spec.features).to_numpy() if spec.features else np.empty((df.height, 0))
     return x.astype(np.float64), df["fwd_ret"].to_numpy().astype(np.float64)
 
@@ -202,7 +203,7 @@ def select_model(
     rows, oos = [], {}
     for spec in specs:
         preds = []
-        x, y = _xy(dev, spec)
+        x, y = design_matrix(dev, spec)
         for k, fold in enumerate(folds):
             model = fit(spec, x[fold.train], y[fold.train])
             pred = model.predict(x[fold.test])
@@ -280,9 +281,9 @@ def run(cfg: ExperimentConfig, config_text: str, runs_root: Path = Path("runs"))
     prep = prepare(cfg)
     dev, test = usable_rows(prep, cfg)
     chosen, table, dev_oos = select_model(dev, cfg, prep.feature_names)
-    x_dev, y_dev = _xy(dev, chosen)
+    x_dev, y_dev = design_matrix(dev, chosen)
     final: FittedModel = fit(chosen, x_dev, y_dev)
-    x_test, _ = _xy(test, chosen)  # the only line that reads test-period features
+    x_test, _ = design_matrix(test, chosen)  # the only line that reads test-period features
     test_pred = test.with_columns(pred=pl.Series(final.predict(x_test)))
 
     keep = [
@@ -375,7 +376,7 @@ def evaluate_run(run_dir: Path) -> dict[str, Any]:
             entry["regimes"] = {
                 name: {
                     "n": part.height,
-                    "mean_abs_ret": float(part["fwd_ret"].abs().mean()),  # type: ignore[arg-type]
+                    "mean_abs_ret": float(np.abs(part["fwd_ret"].to_numpy()).mean()),
                     **evaluate(
                         part["pred"].to_numpy(),
                         part["fwd_ret"].to_numpy(),
@@ -394,7 +395,7 @@ def evaluate_run(run_dir: Path) -> dict[str, Any]:
 
 def cost_threshold(cfg: ExperimentConfig, dev: pl.DataFrame) -> float:
     """Round-trip cost estimate in log-return units, from development data only."""
-    half_spread = float(dev["spread_bps"].median()) / 2 / 1e4  # type: ignore[arg-type]
+    half_spread = float(np.median(dev["spread_bps"].to_numpy())) / 2 / 1e4
     fee = cfg.backtest.costs.taker_fee_bps / 1e4
     return cfg.strategy.threshold_cost_multiple * 2 * (half_spread + fee)
 
@@ -407,7 +408,8 @@ def strategy_thresholds(cfg: ExperimentConfig, dev: pl.DataFrame) -> dict[str, f
     }
     q = cfg.strategy.diagnostic_quantile
     if q is not None:
-        rules[f"diagnostic_top{round((1 - q) * 100)}pct"] = float(dev["pred"].abs().quantile(q))  # type: ignore[arg-type]
+        top = np.quantile(np.abs(dev["pred"].to_numpy()), q)
+        rules[f"diagnostic_top{round((1 - q) * 100)}pct"] = float(top)
     return rules
 
 
@@ -422,8 +424,10 @@ def backtest_run(run_dir: Path, prep: Prepared | None = None) -> dict[str, Any]:
     out: dict[str, Any] = {"thresholds": rules, "results": {}}
     for split in ("dev_oos", "test"):
         signals = preds.filter(pl.col("split") == split).select("t_ns", "session", "pred")
-        lo, hi = signals["t_ns"].min(), signals["t_ns"].max()
-        window = pl.col("available_time_ns").is_between(lo - 3600 * NS, hi + 3600 * NS)  # type: ignore[operator]
+        t = signals["t_ns"].to_numpy()
+        window = pl.col("available_time_ns").is_between(
+            int(t.min()) - 3600 * NS, int(t.max()) + 3600 * NS
+        )
         book = BookTimeline.from_quotes(prep.quotes.filter(window))
         out["results"][split] = {}
         for rule, threshold in rules.items():
@@ -433,7 +437,7 @@ def backtest_run(run_dir: Path, prep: Prepared | None = None) -> dict[str, Any]:
             result.equity.write_parquet(run_dir / f"equity_{split}_{rule}.parquet")
             out["results"][split][rule] = {
                 **result.summary,
-                "max_abs_forecast": float(signals["pred"].abs().max()),  # type: ignore[arg-type]
+                "max_abs_forecast": float(np.abs(signals["pred"].to_numpy()).max()),
             }
     _write_json(run_dir / "backtest.json", out)
     return out
