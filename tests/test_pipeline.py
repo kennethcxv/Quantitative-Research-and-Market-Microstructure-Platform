@@ -244,3 +244,15 @@ def test_features_command_excludes_the_test_period_by_default(workdir: Path) -> 
     main(["features", "--config", str(workdir / "synthetic.toml"), "--out", str(out)])
     sessions = pl.read_parquet(out)["session"].unique().sort().to_list()
     assert [str(d) for d in sessions] == ["2024-01-02", "2024-01-03"]
+
+
+def test_as_of_resolves_latest_by_knowledge_time(workdir: Path) -> None:
+    from qrp.catalog import CatalogError
+    from qrp.experiment import load_config, prepare
+
+    cfg = load_config(workdir / "synthetic.toml")
+    cfg.data.as_of = "2000-01-01T00:00:00"  # before any version was imported
+    with pytest.raises(CatalogError, match="no versions"):
+        prepare(cfg)
+    cfg.data.as_of = "2100-01-01T00:00:00+00:00"
+    assert prepare(cfg).manifest.name == "synthetic"
