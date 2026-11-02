@@ -62,3 +62,10 @@ test evaluation; full report `reports/linkusdt_imbalance.md`):
 * Conclusion: top-of-book imbalance is a strong, stable *predictor* of the next 10 s of LINKUSDT
   mid movement and is worthless to a taker. Using it would require earning the spread (passive
   execution), which this simulator deliberately does not model.
+
+**Reproduction (2026-11-02).** From a fresh clone of commit 1f54618: `qrp fetch-tardis`
+re-downloaded all four files (SHA-256 verified), `qrp import` produced the same dataset version
+`34bcccee27a08362`, and `qrp run` with the unchanged config reproduced
+`reports/linkusdt_imbalance.md` exactly (diff empty apart from run id, provenance and the
+prior-evaluation counter). This was a second evaluation of the test day with no change to any
+choice; it is listed here so the count is complete.
