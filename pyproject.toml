@@ -1,0 +1,44 @@
+[project]
+name = "qrp"
+version = "0.1.0"
+description = "Point-in-time market microstructure research platform: versioned event data, causal features, purged walk-forward evaluation and a conservative event-driven backtester."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Kenneth Camacho" }]
+dependencies = [
+    "numpy>=1.26",
+    "polars>=1.10",
+    "pyarrow>=16",
+    "duckdb>=1.1",
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+bench = ["pandas>=2.2"]
+
+[project.scripts]
+qrp = "qrp.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "pandas>=2.2", "pandas-stubs>=2.2"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "NPY"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

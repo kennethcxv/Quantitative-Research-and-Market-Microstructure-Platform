@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+# Generated datasets and run outputs are reproducible from configs; never committed.
+data/
+runs/
+benchmarks/work/
+.DS_Store
