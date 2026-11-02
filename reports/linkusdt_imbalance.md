@@ -1,6 +1,6 @@
 # linkusdt_imbalance
 
-Run `20261102T130546.156Z-a0aca6e8` · dataset `tardis_binance_linkusdt@34bcccee27a08362` · commit `208f906c1b`
+Run `20261102T134317.483Z-a0aca6e8` · dataset `tardis_binance_linkusdt@34bcccee27a08362` · commit `e3ce1a6272`
 
 ## Data
 
@@ -10,7 +10,8 @@ Run `20261102T130546.156Z-a0aca6e8` · dataset `tardis_binance_linkusdt@34bcccee
 * Book depth: full; trades: yes; receive times: measured; exchange times: partial
 * Stream sequencing: `depth` derived, `trades` contiguous
 * Validation warnings: empty_snapshot_level=8, seq_gap=1, stale_feed_gap=1
-* Book reconstruction: {'messages': 1292245, 'snapshots': 5, 'gaps': 0, 'unsynced_messages': 0, 'crossed_messages': 0, 'deletes_of_unknown_level': 12430}
+* Duplicate rows removed at import: 0
+* Book reconstruction: {'messages': 1292245, 'snapshots': 5, 'gaps': 0, 'unsynced_messages': 0, 'crossed_messages': 0, 'deletes_of_unknown_level': 12430, 'trades_checked': 425489, 'trades_inside_stale_quote': 9490}
 * Rows: {'grid': 172674, 'valid': 172674, 'dev': 86297, 'test': 86297}
 
 ## Features
@@ -48,7 +49,7 @@ Run `20261102T130546.156Z-a0aca6e8` · dataset `tardis_binance_linkusdt@34bcccee
 | ridge_all[alpha=0.1] | 5 | 0.06035 | 0.2700 | 5 |
 | ridge_all[alpha=1] | 5 | 0.06105 | 0.2731 | 5 |
 
-Selected by lowest mean fold MSE: **ridge_all[alpha=1]**. Test-period evaluations of this experiment before this run: 0.
+Selected by lowest mean fold MSE: **ridge_all[alpha=1]**. Test-period evaluations of this experiment before this run: 2.
 
 ## Out-of-sample results
 
@@ -56,7 +57,7 @@ Intervals are 95% circular block bootstrap intervals (block = 60 samples); p-val
 
 | split | n | rank IC [95% CI] | OOS R² vs zero [95% CI] | hit rate | calib. slope | null p |
 |---|---|---|---|---|---|---|
-| dev walk-forward | 71914 | 0.2699 [0.2565, 0.2823] | 0.05782 [0.05229, 0.06357] | 0.617 | 1.248 | 0.005 |
+| dev walk-forward (selected model; optimistic) | 71914 | 0.2699 [0.2565, 0.2823] | 0.05782 [0.05229, 0.06357] | 0.617 | 1.248 | 0.005 |
 | test (once) | 86297 | 0.2544 [0.2413, 0.2692] | 0.02768 [0.02183, 0.03439] | 0.619 | 1.139 | 0.005 |
 
 Test results by `rv_30s` tercile (cut points from development data):
@@ -93,7 +94,7 @@ Strategies (thresholds on the forecast, set from development data): `cost_rule` 
 | dev_oos | cost_rule | 0 | 0 | 0 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | - | - |
 | dev_oos | diagnostic_top20pct | 11609 | 25386 | 11419583 | 664.39 | 5.94 | 831.70 | 11419.58 | -11592.83 | -0.15 | -9.668 [-10.512, -8.844] |
 | test | cost_rule | 0 | 0 | 0 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | - | - |
-| test | diagnostic_top20pct | 12167 | 27362 | 11066297 | 609.21 | 7.05 | 963.69 | 11066.30 | -11427.83 | -0.33 | -7.946 [-8.819, -7.064] |
+| test | diagnostic_top20pct | 12169 | 27365 | 11068134 | 609.21 | 7.05 | 963.79 | 11068.13 | -11429.77 | -0.33 | -7.947 [-8.819, -7.066] |
 
 Costs: {'taker_fee_bps': 10.0, 'slippage_bps': 0.0, 'impact_bps_per_l1': 0.0}; latencies (ms): decision 1.0, order 5.0, ack 5.0 (assumptions, not measurements); position size 50.0, limit 50.0.
 
@@ -106,15 +107,15 @@ Costs: {'taker_fee_bps': 10.0, 'slippage_bps': 0.0, 'impact_bps_per_l1': 0.0}; l
 | time_rotated_labels | selection returns no signal; forced model's test IC CI contains 0 | selected zero (IC 0.0000); ridge_all[alpha=1] IC 0.0023 [-0.0151, 0.0227] | yes |
 | leakage_canary | truncation test flags only the canary | flagged real=[], canary run=['leak_canary']; canary test IC 0.996 | yes |
 | label_overlap | shuffled K-fold IC >> purged walk-forward IC | nearest-in-time model: shuffled 5-fold IC 0.921, purged walk-forward IC 0.008 | yes |
-| random_signal_backtest | net P&L < 0 (pays costs, no edge) | edge -5.25, costs 28212.24, net -28217.49 | yes |
+| random_signal_backtest | net P&L < 0 (pays costs, no edge) | edge 15.63, costs 28135.74, net -28120.10 | yes |
 | null_strategy | no fills, P&L exactly 0 | fills 0, P&L 0.0 | yes |
 
 ## Conclusions (mechanical)
 
-* Test rank IC distinguishable from zero (CI excludes 0): yes
-* Beats the zero forecast on test squared error (R² CI above 0): yes
-* Cost-rule strategy did not trade on test: the largest forecast (7.99e-04) never exceeded the cost threshold (2.05e-03)
-* `diagnostic_top20pct` on test: edge before costs 609.21, net -11427.83 after 970.74 spread/latency and 11066.30 fees
+* Signal exists (test rank IC CI excludes 0 and null p < 0.01): yes and yes
+* Usable (beats the zero forecast: test OOS R² CI entirely above 0): yes
+* Tradeable: no. The cost-rule strategy did not trade on test: the largest forecast (7.99e-04) never exceeded the cost threshold (2.05e-03)
+* `diagnostic_top20pct` on test: edge before costs 609.21, net -11429.77 after 970.84 spread/latency and 11068.13 fees
 
 ## Reproduce
 
@@ -122,7 +123,7 @@ Costs: {'taker_fee_bps': 10.0, 'slippage_bps': 0.0, 'impact_bps_per_l1': 0.0}; l
 qrp run --config <this run's config.toml>   # dataset version 34bcccee27a08362
 ```
 
-Provenance: `{"git_commit": "208f906c1b99e54831d4cbd9ffcbe5a28492149d", "git_dirty": false, "source_sha256": "d236b9fa6218761d9063c4ad5f6769771eeca52a0cf62b7479df5852299975f3", "python": "3.12.14", "platform": "macOS-27.0.1-arm64-arm-64bit", "packages": {"qrp": "0.1.0", "numpy": "2.5.4", "polars": "2.1.0", "pyarrow": "26.0.0", "duckdb": "2.0.0", "pydantic": "2.14.2"}}`
+Provenance: `{"git_commit": "e3ce1a6272ba4d7b430c00b4f028e9f231281ae5", "git_dirty": false, "source_sha256": "24e402843dab1465651d90978208adb5efbe58a009463212f4caab58e10060f0", "python": "3.12.14", "platform": "macOS-27.0.1-arm64-arm-64bit", "packages": {"qrp": "0.1.0", "numpy": "2.5.4", "polars": "2.1.0", "pyarrow": "26.0.0", "duckdb": "2.0.0", "pydantic": "2.14.2"}}`
 
 <details><summary>config.toml</summary>
 

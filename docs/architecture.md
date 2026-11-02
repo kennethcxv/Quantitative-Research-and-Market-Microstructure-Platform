@@ -69,9 +69,13 @@ data/catalog/<dataset>/
   <version>/events/symbol=S/date=D/   hive-partitioned Parquet (zstd), sorted by seq
 ```
 
-`version` = sha256 of (raw input bytes, adapter name, adapter parameters, schema version).
-Re-importing identical input yields the same version; a corrected input yields a new version
-that records `parent_version` and a revision note. Old versions are never modified.
+`version` = sha256 of (raw input bytes, adapter name, adapter parameters, schema version):
+versions are addressed by their inputs. The manifest also stores a value-based fingerprint of
+the stored events (`content_sha256`); re-importing the same inputs through changed adapter code
+that produces different events is refused, so an adapter change must carry a new adapter name
+(`tardis-csv@2`). A corrected input yields a new version that records `parent_version` and a
+revision note. Old versions are never modified. `test_access.jsonl` next to the versions log
+records every run that read a test period of this dataset.
 
 ## 3. Temporal-leakage rules
 
@@ -84,7 +88,9 @@ that records `parent_version` and a revision note. Old versions are never modifi
    `label_end_ns + embargo <= s`. Walk-forward folds only train on the past.
 4. **Holdout discipline.** Data are split into a development period and a final test period.
    Walk-forward folds inside development select the model and its hyper-parameters; the frozen
-   choice is evaluated on the test period exactly once.
+   choice is evaluated on the test period once per run. Each test access is appended to the
+   dataset's ledger and the count of earlier accesses is printed in the report; stage re-runs
+   refuse a config edited after the run.
 5. **Causality tests.** Feature code and the backtester are tested by *truncation invariance*:
    outputs at times `<= T` must be identical whether or not data after `T` exists.
 6. **Execution latency.** An order decided at `t` reaches the exchange at
@@ -97,7 +103,7 @@ that records `parent_version` and a revision note. Old versions are never modifi
 
 ```
 adapters.py         qrp-v1 Parquet/CSV/NDJSON + sidecar, Tardis.dev CSV; synth.py generator
-    -> validate.py      18 integrity checks, severity-ranked report, deduplication
+    -> validate.py      19 integrity checks, severity-ranked report, deduplication
     -> catalog.py       immutable content-addressed versions, partitioned Parquet + manifest
     -> book.py          L2 reconstruction -> per-message top-N ladder, synced/crossed flags
     -> features.py      availability clock, causal features, forward-return labels

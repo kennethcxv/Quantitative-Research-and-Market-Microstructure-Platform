@@ -12,9 +12,19 @@ A primed symbol refers to the previous book message.
 ## When a sample is valid
 
 A grid row is `valid` only if the book it reads is synced (a snapshot has been applied since the
-last detected gap), not crossed, two-sided, and its last message is at most `max_book_age_s` old.
-On invalid rows `m` is null, so every return, volatility or label that would span an untrusted
-book is null as well; such rows never reach a model.
+last detected gap), not crossed, two-sided (empty ladder levels are NaN and count as missing),
+and its last message is at most `max_book_age_s` old. On invalid rows `m` is null, and:
+
+* clock- and event-time returns and the label need **both endpoints** valid; the path between
+  them may cross an invalid stretch (the endpoints are trustworthy prices);
+* `rv_{W}s` needs **every** step in its window valid;
+* window sums (OFI, trade counts and volumes) include whatever arrived in the window; OFI terms
+  are zero across unsynced or crossed messages;
+* rows that are invalid or miss any feature never reach a model or the backtester.
+
+A book row becomes available only when every message it reflects is available (running
+maximum of availability in message order), so out-of-order exchange times on feeds without
+receive times cannot leak state early (`test_out_of_order_exchange_times_cannot_leak_book_state`).
 
 ## Book state
 

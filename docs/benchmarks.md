@@ -72,29 +72,49 @@ cumulative-sum method works for any window and any grid, which is why the featur
 
 ## Where the pipeline actually spends time
 
-Profiled on the real dataset (Tardis LINKUSDT, 2 days, 9.29 M rows; `cProfile` plus wall-clock
-timings, median of 3 where stated):
+Profiled on the real dataset (Tardis LINKUSDT, 2 days, 9.29 M rows) with `cProfile` and
+wall-clock timings:
 
 | Stage | Wall time |
 |---|---|
-| `qrp import` (CSV parse, normalise, 18 validation checks, dedupe, partitioned write, SHA-256) | 5.3 s |
+| `qrp import` (CSV parse, normalise, validation checks, dedupe, partitioned write, SHA-256) | 5.3 s |
 | Catalog scan + sort of 9.29 M rows | 0.2 s |
-| Book reconstruction, 8.86 M book rows → 1.29 M messages | 5.1 s (median of 3) |
+| Book reconstruction, 8.86 M book rows → 1.29 M messages | 3.97 s now (5.91 s originally) |
 | All 18 features + labels on 172,674 grid points | 0.3 s |
-| Full `qrp run` (selection, single test evaluation, bootstrap, regimes, 4 backtests, 7 controls) | 33 s |
+| Full `qrp run` (selection, single test evaluation, bootstrap, regimes, 4 backtests, 7 controls), measured before the reconstruction speed-up | 33 s |
 
-Book reconstruction is the one stage that is inherently sequential, and it dominates. One
-optimisation was made and measured:
+Book reconstruction is the one inherently sequential stage, and it dominated the profile
+(~95% of data preparation). What was tried, and what the measurements showed:
 
-* Per-message flags computed once with `numpy.logical_and.reduceat` instead of per-message
-  slice reductions, and the loop switched from indexing numpy arrays to plain Python lists.
-  Output is byte-identical (row hash compared). Median of 3: synthetic feed 1.11 s → 0.85 s
-  (−23%); real feed 5.49 s → 5.13 s (−7%).
-* Why the real-data gain was small: `cProfile` adds overhead to every call, which inflated the
-  apparent cost of ~2.6 M tiny numpy calls. The real feed also has ~7 rows per message versus
-  ~1.2 in the synthetic one, so per-row work (dict update plus `bisect` on a ~1,000-level
-  side) dominates: 5.13 s / 8.86 M rows ≈ 0.58 µs per row in CPython.
-* Not done: a compiled implementation (Rust/C++ extension or numba), which would remove the
-  interpreter overhead (gain not measured here). 5 s for two days of full-depth data does not
-  justify a second toolchain in a research repo; it is the first thing to do if datasets grow
-  by an order of magnitude, and the C++ engine in Project 1 is the natural home for it.
+1. **First attempt** (commit 4917a93): compute per-message flags once with
+   `numpy.logical_and.reduceat` instead of reducing millions of tiny slices, and iterate plain
+   Python lists instead of indexing numpy scalars. I reported this as 5.49 s → 5.13 s (−7%).
+   That figure was measured while another process was loading the machine. Re-measured
+   properly (below), this version is within 2% of the original on real data, and storing the
+   ladder as a list of Python float lists added ~600 MB of peak memory. `cProfile` had also
+   overstated the per-call overhead it targeted: it charges a fixed cost to every call, which
+   inflated ~2.6 M tiny numpy calls.
+2. **Second change** (commit 63e99e9): write the ladder into a flat `array("d")` buffer and
+   keep sequence numbers only at message starts instead of a per-row Python int list. The gain
+   comes from not allocating 1.3 M small lists and 8.9 M int objects.
+
+Method for the final numbers: `benchmarks/compare_book_revisions.py`. It extracts `book.py`
+from each git revision, runs each measurement in a fresh process, alternates revisions
+(ABAB…) so drift in machine load hits both equally, and requires identical output row hashes.
+Five runs each, median:
+
+| Data | Original (a620b7b) | Now | Peak RSS (reconstruction) |
+|---|---|---|---|
+| Tardis LINKUSDT, 8.86 M rows | 5.91 s | 3.97 s (−33%) | unchanged (~1.56 GB over input) |
+| Synthetic, 0.49 M rows | 1.14 s | 0.68 s (−40%) | unchanged (~0.36 GB) |
+
+```
+uv run python benchmarks/compare_book_revisions.py tardis_binance_linkusdt a620b7b HEAD
+```
+
+The remaining cost is per-row dict and `bisect` work in CPython: 3.97 s / 8.86 M rows ≈ 0.45 µs
+per row. A compiled implementation (Rust/C++ extension or numba) would remove the interpreter
+overhead; the gain was not measured here. It was not done, because 4 s for two days of
+full-depth data does not justify a second toolchain in a research repo. It is the first thing
+to do if datasets grow by an order of magnitude, and the C++ engine in Project 1 is the
+natural home for it.

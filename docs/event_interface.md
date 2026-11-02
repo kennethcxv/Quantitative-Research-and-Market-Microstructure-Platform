@@ -20,7 +20,7 @@ received them. Different streams may be interleaved arbitrarily.
 
 | Column | Type | Null | Semantics |
 |--------|------|------|-----------|
-| `symbol` | string | no | Instrument identifier as the venue spells it. |
+| `symbol` | string | no | Instrument identifier, characters `[A-Za-z0-9._-]` only (it becomes a directory name): map `XBT/USD` to `XBT-USD`. |
 | `stream` | string | no | Feed channel the row arrived on, e.g. `itch`, `depth`, `trades`. Must be declared in the sidecar. |
 | `seq` | int64 | no | Message number within `(symbol, stream)`. All rows of one message share it. |
 | `event_time_ns` | int64 | yes | Venue timestamp, UTC epoch nanoseconds. Null if the venue sends none — never a copy of `recv_time_ns`. |
@@ -28,7 +28,7 @@ received them. Different streams may be interleaved arbitrarily.
 | `kind` | string | no | `book`, `snapshot` or `trade`. |
 | `side` | int8 | no | `book`/`snapshot`: `+1` bid, `-1` ask. `trade`: aggressor `+1` buy, `-1` sell, `0` unknown. |
 | `price` | float64 | no | Level price or trade price, in quote currency. |
-| `size` | float64 | no | `book`: new total size at the level (`0` deletes it). `snapshot`: size at the level (> 0). `trade`: quantity (> 0). |
+| `size` | float64 | no | `book`: new total size at the level (`0` deletes it). `snapshot`: size at the level (> 0; a zero-size level is ignored with a warning). `trade`: quantity (> 0). |
 
 At least one of the two timestamps must be present on every row.
 
@@ -41,6 +41,12 @@ At least one of the two timestamps must be present on every row.
   `book` rows.
 * **`trade`** — a print. It may share a message with the `book` rows it caused (a sweep is one
   message), which lets the consumer see the trade and the depleted levels atomically.
+
+Within one message there is **at most one row per `(kind, side, price)`**: a sweep has one
+trade row per price level it touched, and several prints at the same price in one message are
+aggregated into one row with the summed size. Two different rows for the same key are a
+`conflicting_update` error. Identical rows can therefore only come from re-delivery; the
+importer removes them and records the count (`duplicates_removed`) in the manifest and report.
 
 ## Sidecar
 

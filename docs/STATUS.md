@@ -4,22 +4,30 @@ Last updated: 2026-11-02.
 
 ## Completed
 
-* M1 architecture and data model · M2 schema, per-stream sequencing, 18 integrity checks ·
+* M1 architecture and data model · M2 schema, per-stream sequencing, integrity checks (19) ·
   M3 synthetic feed and versioned catalog · M4 book reconstruction · M5 availability clock,
   features, Tardis adapter · M6 splits, baselines, statistics · M7 backtester · M8 runner, CLI,
   report · M9 negative controls, interface fixture, end-to-end tests · M10 real-data experiment
-  E2 · M11 benchmarks and profiling · M12 documentation
+  E2 · M11 benchmarks and profiling · M12 independent review and corrections · documentation
 
-## Test results
+## Verified
 
-`uv run pytest`: 70 passed. ruff, ruff format, mypy --strict (src): clean.
+* `uv run pytest`: 83 passed; ruff, ruff format, mypy --strict (src): clean.
+* CI (GitHub Actions, Python 3.11 and 3.12): tests plus the synthetic end-to-end demo with a
+  check that every negative control passed.
+* Fresh clone: install from the lockfile, tests, demo, and real-data reproduction of E2 (same
+  dataset version, identical report) — see docs/experiment_log.md.
 
-## Remaining
+## Known limitations
 
-1. Fresh-clone verification (install, tests, demo, real-data reproduction)
-2. Independent final review of the code against the requirements
+See README "Limitations": no passive fills or persistent impact; one real test day; vendor
+capture times; 100 ms depth batching (stale-depth fill bias not measured); Python book
+reconstruction (~2.2 M rows/s).
 
-## Known issues
+## Next steps if work continues
 
-* None open. Fixed during development: nondeterministic calibration aggregation (abffd8d);
-  others are listed in docs/journal.md.
+1. A second instrument and more test days (first-of-month samples) to measure day-to-day
+   variation of the signal.
+2. Measure the stale-depth fill bias: compare each simulated fill with trades printed between
+   the depth batch and the order's arrival.
+3. A compiled book reconstructor (or consume Project 1's C++ engine output directly).

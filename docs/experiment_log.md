@@ -15,8 +15,8 @@ results. Entries are written before the test evaluation (plan) and completed aft
 * Result (`reports/synthetic_demo.md`): ols_imbalance_l1 selected; test rank IC 0.26 [0.24,
   0.29], OOS R² 0.042 [0.033, 0.053], calibration slope 1.09. Cost-rule strategy (2 bps fee) never
   trades: largest forecast 0.7 bp vs 5 bp round-trip cost. The diagnostic top-20% strategy has
-  positive edge before costs (+56) that spread (-324) and fees (-470) turn into -737. All seven
-  negative controls pass.
+  positive edge before costs (+56) that spread (-324) and fees (-470) turn into -738 (-737
+  before backtest signals were extended to unlabelled rows). All seven negative controls pass.
 
 ## E2 — LINKUSDT order-book state vs 10 s mid return (real data)
 
@@ -69,3 +69,15 @@ re-downloaded all four files (SHA-256 verified), `qrp import` produced the same 
 `reports/linkusdt_imbalance.md` exactly (diff empty apart from run id, provenance and the
 prior-evaluation counter). This was a second evaluation of the test day with no change to any
 choice; it is listed here so the count is complete.
+
+**Correction run (2026-11-02, after independent review).** The review found pipeline issues
+(see `docs/journal.md` M12), none of which changed E2's features or labels (byte-identical
+feature tables). One fix did change the backtest inputs: signals now also cover rows without a
+label, such as the final 10 s of the day. E2 was re-run once with the unchanged config on
+commit e3ce1a6. This was the third evaluation of the test day, recorded in the dataset's
+test-access ledger.
+
+* Model selection, test IC, R², calibration, regimes and null p-values: identical.
+* Diagnostic backtest: 12,169 orders instead of 12,167; net -11,429.77 instead of -11,427.83.
+  Edge before costs is unchanged at 609.21.
+* Conclusions unchanged. `reports/linkusdt_imbalance.md` is now this run's report.

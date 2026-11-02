@@ -2,7 +2,7 @@
 
 > **SYNTHETIC DATA.** Every result below comes from a simulated order book. It shows the pipeline works; it says nothing about real markets or real profitability.
 
-Run `20261102T130655.845Z-e937ec94` · dataset `synthetic@309b8327bc0c4ad7` · commit `aada71f750`
+Run `20261102T134348.094Z-e937ec94` · dataset `synthetic@309b8327bc0c4ad7` · commit `e3ce1a6272`
 
 ## Data
 
@@ -12,7 +12,8 @@ Run `20261102T130655.845Z-e937ec94` · dataset `synthetic@309b8327bc0c4ad7` · c
 * Book depth: full; trades: yes; receive times: measured; exchange times: exchange
 * Stream sequencing: `feed` contiguous
 * Validation warnings: seq_gap=3
-* Book reconstruction: {'messages': 425276, 'snapshots': 6, 'gaps': 3, 'unsynced_messages': 84, 'crossed_messages': 11, 'deletes_of_unknown_level': 0}
+* Duplicate rows removed at import: 0
+* Book reconstruction: {'messages': 425276, 'snapshots': 6, 'gaps': 3, 'unsynced_messages': 84, 'crossed_messages': 11, 'deletes_of_unknown_level': 0, 'trades_checked': 54003, 'trades_inside_stale_quote': 4}
 * Rows: {'grid': 43017, 'valid': 43011, 'dev': 28530, 'test': 14265}
 
 ## Features
@@ -49,7 +50,7 @@ Run `20261102T130655.845Z-e937ec94` · dataset `synthetic@309b8327bc0c4ad7` · c
 | ridge_all[alpha=0.01] | 5 | 0.04268 | 0.2419 | 5 |
 | ridge_all[alpha=0.1] | 5 | 0.04517 | 0.2411 | 5 |
 
-Selected by lowest mean fold MSE: **ols_imbalance_l1**. Test-period evaluations of this experiment before this run: 1.
+Selected by lowest mean fold MSE: **ols_imbalance_l1**. Test-period evaluations of this experiment before this run: 0.
 
 ## Out-of-sample results
 
@@ -57,7 +58,7 @@ Intervals are 95% circular block bootstrap intervals (block = 60 samples); p-val
 
 | split | n | rank IC [95% CI] | OOS R² vs zero [95% CI] | hit rate | calib. slope | null p |
 |---|---|---|---|---|---|---|
-| dev walk-forward | 23775 | 0.2662 [0.2482, 0.2873] | 0.04798 [0.03796, 0.05768] | 0.640 | 0.931 | 0.005 |
+| dev walk-forward (selected model; optimistic) | 23775 | 0.2662 [0.2482, 0.2873] | 0.04798 [0.03796, 0.05768] | 0.640 | 0.931 | 0.005 |
 | test (once) | 14265 | 0.2637 [0.2423, 0.2925] | 0.04193 [0.03275, 0.05266] | 0.639 | 1.091 | 0.005 |
 
 Test results by `rv_30s` tercile (cut points from development data):
@@ -92,9 +93,9 @@ Strategies (thresholds on the forecast, set from development data): `cost_rule` 
 | split | strategy | orders | fills | notional | edge at decision | latency cost | spread+slippage | fees | net P&L | break-even fee (bps) | P&L/min [95% CI] |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | dev_oos | cost_rule | 0 | 0 | 0 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | - | - |
-| dev_oos | diagnostic_top20pct | 4469 | 7983 | 4569622 | 102.03 | 0.99 | 616.80 | 913.92 | -1429.68 | -1.13 | -3.598 [-3.914, -3.306] |
+| dev_oos | diagnostic_top20pct | 4473 | 7991 | 4573655 | 102.08 | 0.99 | 617.57 | 914.73 | -1431.21 | -1.13 | -3.602 [-3.917, -3.312] |
 | test | cost_rule | 0 | 0 | 0 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | - | - |
-| test | diagnostic_top20pct | 2313 | 4154 | 2348061 | 55.81 | -0.65 | 323.84 | 469.61 | -736.99 | -1.14 | -3.097 [-3.494, -2.704] |
+| test | diagnostic_top20pct | 2315 | 4159 | 2350081 | 56.16 | -0.65 | 324.48 | 470.02 | -737.69 | -1.14 | -3.100 [-3.494, -2.706] |
 
 Costs: {'taker_fee_bps': 2.0, 'slippage_bps': 0.0, 'impact_bps_per_l1': 0.0}; latencies (ms): decision 1.0, order 5.0, ack 5.0 (assumptions, not measurements); position size 10.0, limit 10.0.
 
@@ -107,15 +108,15 @@ Costs: {'taker_fee_bps': 2.0, 'slippage_bps': 0.0, 'impact_bps_per_l1': 0.0}; la
 | time_rotated_labels | selection returns no signal; forced model's test IC CI contains 0 | selected zero (IC 0.0000); ols_imbalance_l1 IC -0.0055 [-0.0347, 0.0242] | yes |
 | leakage_canary | truncation test flags only the canary | flagged real=[], canary run=['leak_canary']; canary test IC 0.980 | yes |
 | label_overlap | shuffled K-fold IC >> purged walk-forward IC | nearest-in-time model: shuffled 5-fold IC 0.776, purged walk-forward IC 0.003 | yes |
-| random_signal_backtest | net P&L < 0 (pays costs, no edge) | edge 1.46, costs 1109.54, net -1108.08 | yes |
+| random_signal_backtest | net P&L < 0 (pays costs, no edge) | edge 7.65, costs 1093.58, net -1085.94 | yes |
 | null_strategy | no fills, P&L exactly 0 | fills 0, P&L 0.0 | yes |
 
 ## Conclusions (mechanical)
 
-* Test rank IC distinguishable from zero (CI excludes 0): yes
-* Beats the zero forecast on test squared error (R² CI above 0): yes
-* Cost-rule strategy did not trade on test: the largest forecast (6.84e-05) never exceeded the cost threshold (4.99e-04)
-* `diagnostic_top20pct` on test: edge before costs 55.81, net -736.99 after 323.19 spread/latency and 469.61 fees
+* Signal exists (test rank IC CI excludes 0 and null p < 0.01): yes and yes
+* Usable (beats the zero forecast: test OOS R² CI entirely above 0): yes
+* Tradeable: no. The cost-rule strategy did not trade on test: the largest forecast (6.84e-05) never exceeded the cost threshold (4.99e-04)
+* `diagnostic_top20pct` on test: edge before costs 56.16, net -737.69 after 323.83 spread/latency and 470.02 fees
 
 ## Reproduce
 
@@ -123,7 +124,7 @@ Costs: {'taker_fee_bps': 2.0, 'slippage_bps': 0.0, 'impact_bps_per_l1': 0.0}; la
 qrp run --config <this run's config.toml>   # dataset version 309b8327bc0c4ad7
 ```
 
-Provenance: `{"git_commit": "aada71f750946b11c6d2a304ef6feda91ad53f94", "git_dirty": false, "source_sha256": "ad72c6793f31c1852a3250a46c95c543f95631ed82a37f64d557059f6d37b9d6", "python": "3.12.14", "platform": "macOS-27.0.1-arm64-arm-64bit", "packages": {"qrp": "0.1.0", "numpy": "2.5.4", "polars": "2.1.0", "pyarrow": "26.0.0", "duckdb": "2.0.0", "pydantic": "2.14.2"}}`
+Provenance: `{"git_commit": "e3ce1a6272ba4d7b430c00b4f028e9f231281ae5", "git_dirty": false, "source_sha256": "24e402843dab1465651d90978208adb5efbe58a009463212f4caab58e10060f0", "python": "3.12.14", "platform": "macOS-27.0.1-arm64-arm-64bit", "packages": {"qrp": "0.1.0", "numpy": "2.5.4", "polars": "2.1.0", "pyarrow": "26.0.0", "duckdb": "2.0.0", "pydantic": "2.14.2"}}`
 
 <details><summary>config.toml</summary>
 

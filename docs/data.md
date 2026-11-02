@@ -60,8 +60,11 @@ data carries extra restrictions (clause 23) and is deliberately not used.
 * One `stale_feed_gap`: no trades for more than 60 s around 23:42 UTC on 2024-04-01.
 * No crossed books and no unsynced messages after reconstruction.
 * The depth channel is batched (100 ms on Binance spot) while trades are real-time, so a trade
-  can print through a quote the book has not yet updated. `book.trades_inside_stale_quote`
-  measures this; it is why the backtester never fills against the book the strategy saw.
+  can print inside a quote the book has not yet updated: 9,490 of 425,489 prints (2.2%)
+  (`book.trades_inside_stale_quote`, reported in every run). The backtester fills against the
+  latest exchange-clock depth message at order arrival, not the book the strategy saw when it
+  decided, but that message can itself lag the trades by up to one batch, and liquidity those
+  trades already took is not removed. That bias is optimistic for a taker and is not measured.
 
 ## Synthetic feed
 

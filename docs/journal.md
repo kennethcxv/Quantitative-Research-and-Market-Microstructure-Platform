@@ -166,3 +166,39 @@ date D" unanswerable.
   per-call overhead, and real messages carry ~7 rows each. Remaining cost is per-row Python
   work (~0.58 µs/row). A compiled implementation was considered and not done (see
   docs/benchmarks.md).
+
+## M12 — Independent review and corrections (2026-11-02)
+
+A separate reviewer agent audited the repository with probe scripts. Confirmed issues and what
+was done:
+
+* **Look-ahead without receive times (fixed).** With exchange-time-only data, a message whose
+  exchange time was earlier than its predecessor's made the cumulative book state visible
+  before a message it already contained. Book availability is now the running maximum in
+  message order, and a message carries its last row's timestamp. My causality test could not
+  catch this: it used measured receive times, which are monotone by validation.
+* **One-sided books counted as valid (fixed).** Empty ladder levels are NaN, and the validity
+  check tested for null; a NaN OFI term then wiped out a whole session. Neither committed
+  experiment had a one-sided book (feature tables byte-identical before and after both fixes).
+* **Holdout discipline not enforced (fixed).** Stage re-runs could re-score the test period
+  under an edited config; `qrp features` wrote test labels; the evaluation counter reset with
+  a new runs folder. Now: config hash check, dev-only feature export by default, and a
+  per-dataset test-access ledger in the catalog (backfilled with the two earlier E2 runs,
+  marked as such).
+* **Backtest signals depended on labels (fixed).** Signals now cover every complete row.
+* **Unsafe symbols, stale versions on adapter change, version-log crash window (fixed).**
+* **Truncation checks used raw time and one cut (fixed):** availability time, several cuts.
+* **Report rules differed from the pre-registered ones (fixed)**, and docs overstated a few
+  guarantees (corrected: README, features.md, data.md, event_interface.md).
+
+Correction to M11: the "−7%" reconstruction speed-up was measured while the reviewer agent was
+loading the machine. Interleaved fresh-process measurements showed that version within 2% of
+the original and ~600 MB heavier. Replacing its list-of-lists ladder with a flat buffer gave
+the real gain: 5.91 s → 3.97 s on the real data, same memory, identical output. The method is
+now a committed script (`benchmarks/compare_book_revisions.py`).
+
+E2 was re-run once on the corrected code with the unchanged config (third evaluation of the
+test day, recorded in the ledger and the experiment log). All statistical results were
+identical; the diagnostic backtest changed by 2 orders.
+
+Tests: 83 passed.

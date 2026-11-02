@@ -25,8 +25,8 @@ Plans, results and a disclosure of the one exploratory look at development data 
 ```mermaid
 flowchart LR
     A["events: Project 1/2 export (qrp.events.v1),<br/>Tardis CSV, synthetic generator"] --> B["adapters<br/>(representation only)"]
-    B --> C["validate<br/>18 checks, per-stream sequencing"]
-    C --> D[("catalog<br/>immutable versions,<br/>Parquet symbol=/date=")]
+    B --> C["validate<br/>19 checks, per-stream sequencing"]
+    C --> D[("catalog<br/>immutable versions,<br/>Parquet symbol=/date=,<br/>test-access ledger")]
     D --> E["book reconstruction<br/>gap → unsynced until snapshot"]
     E --> F["features + labels<br/>availability clock, as-of joins"]
     F --> G["purged walk-forward<br/>model selection (dev only)"]
@@ -42,8 +42,10 @@ The decisions that matter, each enforced in code and tested:
 * **Three timestamps, one research clock.** Exchange time (`event_time_ns`) and capture time
   (`recv_time_ns`) are stored separately and both may be null; nothing is invented at import.
   Research uses an *availability time*: receive time if measured, otherwise exchange time plus
-  a latency assumption that the experiment config must state explicitly. Dataset knowledge
-  time (manifest `created_at_ns`) governs revisions.
+  a latency assumption that the experiment config must state explicitly. A cumulative book
+  state becomes available only once every message it contains is. Dataset knowledge time
+  (manifest `created_at_ns`) orders revisions, and `data.as_of` replays an experiment with
+  only the versions known on a date.
   [architecture.md §2](docs/architecture.md#2-data-model)
 * **Feed-specific sequencing.** Each `(symbol, stream)` declares whether its sequence numbers
   are `contiguous`, `monotonic` or adapter-`derived`. Only a contiguous stream can prove loss.
@@ -54,13 +56,18 @@ The decisions that matter, each enforced in code and tested:
   that deleting all data after `T` leaves every feature at `t ≤ T` unchanged.
   [features.md](docs/features.md)
 * **Holdout discipline.** Model choice and hyper-parameters come from purged, embargoed
-  walk-forward folds on development data. The test period is read once, after selection. Each
-  run records how many earlier runs of the same experiment touched the test set.
+  walk-forward folds on development data; the test period is read once per run, after
+  selection. Every test access is appended to a ledger stored with the dataset, so renaming
+  the experiment or the runs folder does not reset the count. Re-running a stage refuses a
+  config edited after the run, and `qrp features` exports development rows only unless asked.
 * **Conservative execution.**
   * Only marketable IOC orders are simulated. They reach the venue after configured latencies
-    and walk the depth that was visible at arrival time.
-  * Any remainder is cancelled, liquidity already taken is not offered again, and the order
-    pays spread, slippage and fees.
+    and walk the depth of the latest exchange-clock book message at arrival time.
+  * Any remainder is cancelled and the order pays spread, slippage and fees. Liquidity our own
+    earlier orders took is not offered again within the same book message (with 1 s signals
+    this rarely binds).
+  * Signals come from every row whose features are complete, so whether the strategy can act
+    never depends on a label (which needs the book to stay valid until t + h).
   * Passive fills are not simulated, because queue position is unknowable from L2 data.
   * Fills are flagged `simulated`, and the ledger rejects any fill better than the touch.
 * **Controls with pass criteria.** The controls are:
@@ -122,9 +129,11 @@ Measured, not estimated; method and caveats in [docs/benchmarks.md](docs/benchma
   1 GB peak RSS for naive pandas. pandas with partition filters gets most of the way (35 ms),
   so the layout matters more than the engine.
 * **Real data:** imports at 9.3 M rows in 5.3 s including validation. Book reconstruction is
-  the sequential bottleneck at 0.58 µs per row. One optimisation cut it 7% on real data and 23%
-  on synthetic. Why the gain was small, and what a compiled version would change, is written up
-  in the benchmark notes.
+  the sequential bottleneck. Storing the ladder in a flat buffer and trimming per-row Python
+  objects took it from 5.91 s to 3.97 s on the real data (−33%, median of 5 interleaved
+  fresh-process runs, identical output and peak memory). An earlier attempt that I first
+  reported as −7% turned out, under interleaved measurement, to be within noise and to cost
+  600 MB of extra memory. The benchmark notes have the details.
 
 ## Integration with Projects 1 and 2
 
@@ -143,13 +152,16 @@ evaluation. Simulation: execution and P&L only.
   prices. The decomposition shows the signal could only pay if the strategy earned the spread
   instead of crossing it, and that is exactly what this simulator cannot assess honestly.
 * **Two real days, one instrument.** The E2 test is a single day. Its confidence intervals
-  describe within-day sampling error, not day-to-day or regime variation; the drop from dev
-  R² 0.058 to test 0.028 is a reminder of that.
+  describe within-day sampling error, not day-to-day or regime variation. The drop from dev R²
+  0.058 to test 0.028 mixes that variation with selection optimism: the dev figure is for the
+  model that the same folds selected.
 * **Vendor capture times.** Tardis timestamps reflect their collector's location. Latency
   parameters are assumptions, and nothing here is a claim about achievable live latency.
 * **Depth-channel batching.** Binance spot depth is batched every 100 ms, so OFI is computed
-  per batch and the exchange-side book can lag trades.
-* **Python book reconstruction** at ~1.7 M rows/s is fine for days of data and too slow for
+  per batch and the exchange-side book can lag trades: 2.2% of LINKUSDT prints traded inside
+  the quote our book held. Fills against that lagging book do not remove liquidity those
+  trades had already taken, which is optimistic for a taker.
+* **Python book reconstruction** at ~2.2 M rows/s is fine for days of data and too slow for
   years.
 
 ## Repository layout
