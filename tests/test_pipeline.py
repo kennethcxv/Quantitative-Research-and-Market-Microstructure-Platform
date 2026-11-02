@@ -116,6 +116,9 @@ def test_full_workflow_produces_a_complete_run(workdir: Path) -> None:
     manifest = json.loads((run / "manifest.json").read_text())
     assert manifest["test_evaluations_before_this_run"] == 0
     assert manifest["dataset"]["source"]["synthetic"]
+    book = manifest["book"]
+    assert book["gaps"] == 3 and book["trades_checked"] > 0
+    assert book["trades_inside_stale_quote"] < book["trades_checked"] / 100
     assert all(c["passed"] for c in json.loads((run / "controls.json").read_text()))
     report = (run / "report.md").read_text()
     assert "SYNTHETIC DATA" in report and "## Negative controls" in report

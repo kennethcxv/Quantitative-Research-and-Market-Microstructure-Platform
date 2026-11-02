@@ -27,18 +27,19 @@ import polars as pl
 from pydantic import BaseModel
 
 from qrp.backtest import BacktestConfig, BookTimeline, run_backtest, threshold_target
-from qrp.book import BookStats
+from qrp.book import BookStats, trades_inside_stale_quote
 from qrp.catalog import Catalog
 from qrp.features import (
     FeatureConfig,
     TimingConfig,
+    available_time,
     book_quotes,
     build_features,
     feature_docs,
     select_features,
 )
 from qrp.models import FittedModel, ModelSpec, fit
-from qrp.schemas import DatasetManifest
+from qrp.schemas import TRADE, DatasetManifest
 from qrp.splits import admissible, walk_forward
 from qrp.stats import calibration_table, circular_shift_pvalue, evaluate, rank_ic
 
@@ -120,6 +121,7 @@ class Prepared:
     features: pl.DataFrame
     feature_names: list[str]
     book_stats: BookStats
+    quote_checks: dict[str, int]  # trades that printed inside the quote we held (stale book)
 
 
 def prepare(cfg: ExperimentConfig) -> Prepared:
@@ -139,7 +141,14 @@ def prepare(cfg: ExperimentConfig) -> Prepared:
     quotes, stats = book_quotes(events, caps, cfg.timing, cfg.features.depth_levels)
     features = build_features(events, caps, cfg.features, cfg.timing, quotes=quotes)
     names = select_features(cfg.features, caps)
-    return Prepared(manifest, events, quotes, features, names, stats)
+    trades = (
+        events.filter(pl.col("kind") == TRADE)
+        .with_columns(available_time(caps, cfg.timing))
+        .filter(pl.col("available_time_ns").is_not_null())
+        .sort("available_time_ns", maintain_order=True)
+    )
+    checks = trades_inside_stale_quote(quotes, trades) if trades.height else {}
+    return Prepared(manifest, events, quotes, features, names, stats, checks)
 
 
 def block_len(cfg: ExperimentConfig) -> int:
@@ -319,7 +328,7 @@ def run(cfg: ExperimentConfig, config_text: str, runs_root: Path = Path("runs"))
                 "capabilities": prep.manifest.capabilities.model_dump(),
                 "validation": prep.manifest.validation,
             },
-            "book": prep.book_stats.model_dump(),
+            "book": {**prep.book_stats.model_dump(), **prep.quote_checks},
             "features": {n: feature_docs(cfg.features)[n] for n in prep.feature_names},
             "rows": {
                 "grid": prep.features.height,
