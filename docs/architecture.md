@@ -88,25 +88,27 @@ that records `parent_version` and a revision note. Old versions are never modifi
 5. **Causality tests.** Feature code and the backtester are tested by *truncation invariance*:
    outputs at times `<= T` must be identical whether or not data after `T` exists.
 6. **Execution latency.** An order decided at `t` reaches the exchange at
-   `t + order_latency` and fills against the book state that existed at that arrival time — never
-   against the book the strategy saw when it decided. Latencies are configured assumptions.
+   `t + decision_latency + order_latency` and fills against the book state that existed on the
+   exchange clock at that arrival time — never against the book the strategy saw when it
+   decided. The strategy learns of the fill `ack_latency` later and has at most one working
+   order. All latencies are configured assumptions.
 
 ## 4. Components
 
 ```
-adapters (qrp-v1 parquet/csv/ndjson, binance, synthetic generator)
-    -> validate.py      integrity checks, severity-ranked report
-    -> catalog.py       versioned, partitioned Parquet + manifest
-    -> book.py          L2 reconstruction -> per-message top-of-book / top-N ladder
-    -> features.py      causal microstructure features on a clock-time grid
-    -> labels.py        forward mid returns with label_end_ns
-    -> splits.py        dev/test split, purged + embargoed walk-forward
+adapters.py         qrp-v1 Parquet/CSV/NDJSON + sidecar, Tardis.dev CSV; synth.py generator
+    -> validate.py      18 integrity checks, severity-ranked report, deduplication
+    -> catalog.py       immutable content-addressed versions, partitioned Parquet + manifest
+    -> book.py          L2 reconstruction -> per-message top-N ladder, synced/crossed flags
+    -> features.py      availability clock, causal features, forward-return labels
+    -> splits.py        purged + embargoed walk-forward
     -> models.py        zero / mean / OLS / ridge baselines
     -> stats.py         rank IC, OOS R^2, calibration, block bootstrap, circular-shift nulls
+    -> experiment.py    config-driven run: select on dev, test once, evaluate, backtest
     -> backtest/        event loop, conservative execution, accounting invariants
     -> controls.py      negative controls and leakage canaries
-    -> report.py        markdown research report
-cli.py ties these into reproducible commands; experiment.py writes run manifests.
+    -> report.py        markdown research report with mechanical conclusions
+cli.py exposes each stage as a command; log.py emits one JSON object per log line.
 ```
 
 ## 5. Deliberate non-goals (v1)
