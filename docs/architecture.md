@@ -13,7 +13,7 @@ Requirements that drive the design:
 
 | # | Requirement | Where it is enforced |
 |---|-------------|----------------------|
-| R1 | A strategy may only use data that would have been observable at decision time. | `recv_time_ns` clock, as-of joins, `MarketView` clock guard, causality tests |
+| R1 | A strategy may only use data that would have been observable at decision time. | availability clock, as-of joins, clock-guarded market view, causality tests |
 | R2 | Every result is traceable to an immutable dataset version, config and code revision. | content-addressed dataset versions, run manifests |
 | R3 | Model selection never touches the holdout test period. | `experiment.py`: selection receives only development folds |
 | R4 | Overlapping labels never leak across train/test boundaries. | purged + embargoed walk-forward (`splits.py`) |
@@ -23,42 +23,42 @@ Requirements that drive the design:
 
 ## 2. Data model
 
-### 2.1 Three clocks
+### 2.1 Timestamps
 
-| Clock | Column / field | Meaning | Used for |
-|-------|----------------|---------|----------|
-| Event time | `event_time_ns` | Exchange timestamp of the matching-engine event | exchange-side book for simulated fills |
-| Receive time | `recv_time_ns` | When our gateway observed the message | **all research**: features, labels, decisions |
-| Knowledge time | manifest `created_at_ns` | When this version of the dataset entered the catalog | revisions; "which data did we have on date D" |
+| Time | Where | Meaning |
+|------|-------|---------|
+| Exchange time | `event_time_ns` (nullable) | Timestamp the venue put on the message. Null when the venue gives none. |
+| Receive time | `recv_time_ns` (nullable) | When a capture process actually observed the message. Null when nobody captured it. |
+| Knowledge time | manifest `created_at_ns` | When this dataset version entered the catalog; governs revisions. |
+| Availability time | computed per experiment, never stored | When the research strategy is allowed to see a row. |
 
-`recv_time_ns >= event_time_ns` is a validation rule. When a source has no capture
-timestamp (e.g. public exchange archives) the adapter sets `recv_time_ns = event_time_ns +
-assumed_latency` and records `recv_time_measured = false` in the manifest; reports surface that.
+Availability time is the only clock used for features, labels and decisions:
+
+* if the dataset has measured receive times: `available = recv_time_ns + extra_latency`
+* if it does not: `available = event_time_ns + assumed_feed_latency`, and the experiment config
+  **must** set `assumed_feed_latency_ms` explicitly — there is no default.
+
+Stored data therefore never contains an invented timestamp; every assumption lives in a config
+file that is copied into the run manifest and printed in the report. Receive times measured by
+a data vendor's collector describe *that* collector's network position, not ours, so no result
+in this repository is a claim about achievable live latency.
 
 ### 2.2 Canonical event schema `qrp.events.v1`
 
-One row per price-level update or trade print. Rows that share `(symbol, seq)` are one feed
-message and are applied atomically (a market order that sweeps three levels is one message with
-trade rows and book rows).
+One row per price-level update, snapshot level or trade print, specified in
+[`event_interface.md`](event_interface.md). The points that matter for correctness:
 
-| Column | Type | Semantics |
-|--------|------|-----------|
-| `symbol` | string | instrument id |
-| `seq` | int64 | feed message sequence number, contiguous per symbol |
-| `event_time_ns` | int64 | exchange time, UTC epoch ns |
-| `recv_time_ns` | int64 | capture time, UTC epoch ns |
-| `kind` | string | `book` or `trade` |
-| `side` | int8 | book: `+1` bid, `-1` ask. trade: aggressor `+1` buy, `-1` sell, `0` unknown |
-| `price` | float64 | price level / trade price |
-| `size` | float64 | book: new **total** size at that level (`0` deletes it). trade: traded quantity |
-
-Dataset-level facts live in the manifest, not in rows: source and license, `synthetic` flag,
-`book_depth` (number of levels the feed exposes, `null` = full depth), `recv_time_measured`,
-`has_trades`. A depth-1 (top-of-book) source is represented exactly as a one-level book; depth
-features are refused for it. We never fabricate depth from OHLCV or quotes.
-
-This schema is the versioned interface for events produced by Project 1 (market-data engine)
-and stored by Project 2 (event log); see [`event_interface.md`](event_interface.md).
+* **Streams and sequencing.** Each `(symbol, stream)` has its own `seq` space, and the manifest
+  declares whether that space is `contiguous` (a jump means lost messages), `monotonic` (jumps are
+  normal, e.g. ids shared with other channels) or `derived` (the adapter numbered messages; loss
+  is undetectable from ids). Validation only reports missing data where the protocol can prove it.
+* **Messages are atomic.** Rows that share `(symbol, stream, seq)` are one message and are applied
+  together; the book is only observed between messages.
+* **Snapshots reset state.** A `snapshot` message is the complete book. Incremental `book` rows
+  after a detected gap are not trusted until the next snapshot (see `book.py`).
+* **Capabilities.** `book_depth` (levels per side; `null` = full depth), `has_trades`, and the
+  presence of receive times are dataset facts that features check. A top-of-book source is a
+  depth-1 book of snapshot messages; depth features are refused for it.
 
 ### 2.3 Storage layout
 
@@ -75,9 +75,9 @@ that records `parent_version` and a revision note. Old versions are never modifi
 
 ## 3. Temporal-leakage rules
 
-1. **One research clock.** Decisions happen at sample times `t` on the receive clock. A feature
-   at `t` may use only rows with `recv_time_ns <= t` (backward as-of joins; window sums over
-   `(t-W, t]`).
+1. **One research clock.** Decisions happen at sample times `t` on the availability clock. A
+   feature at `t` may use only rows with `available_time_ns <= t` (backward as-of joins; window
+   sums over `(t-W, t]`).
 2. **Labels are future by construction and carry their end time.** `y_t = log mid(t+h) - log
    mid(t)` with `label_end_ns = t + h`. A label is "known" only at `label_end_ns`.
 3. **Purging.** A training sample is admissible for a test block starting at `s` only if
@@ -88,8 +88,8 @@ that records `parent_version` and a revision note. Old versions are never modifi
 5. **Causality tests.** Feature code and the backtester are tested by *truncation invariance*:
    outputs at times `<= T` must be identical whether or not data after `T` exists.
 6. **Execution latency.** An order decided at `t` reaches the exchange at
-   `t + decision_latency + order_latency` and fills against the book reconstructed from events with
-   `event_time_ns` at or before that arrival — never against the book the strategy saw.
+   `t + order_latency` and fills against the book state that existed at that arrival time — never
+   against the book the strategy saw when it decided. Latencies are configured assumptions.
 
 ## 4. Components
 
