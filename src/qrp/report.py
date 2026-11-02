@@ -105,7 +105,9 @@ def write_report(run_dir: Path) -> Path:
         "## Out-of-sample results",
         "",
         "Intervals are 95% circular block bootstrap intervals "
-        f"(block = {metrics['block_len']} samples); p-values are against circular-shift nulls.",
+        f"(block = {metrics['block_len']} samples); p-values are against "
+        f"{cfg.evaluation.n_null} circular-shift nulls, so the smallest attainable p is "
+        f"{1 / (cfg.evaluation.n_null + 1):.3f}.",
         "",
         _table(
             [
