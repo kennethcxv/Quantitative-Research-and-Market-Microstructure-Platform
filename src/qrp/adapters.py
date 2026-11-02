@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import urllib.request
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -108,6 +109,12 @@ TARDIS_REFERENCE_SHA256 = {
     "binance_trades_2024-03-01_LINKUSDT.csv.gz": (
         "5992534932562e87fadc41ecaa01b030755fbbf2a809b3357efa625befc99b32"
     ),
+    "binance_incremental_book_L2_2024-04-01_LINKUSDT.csv.gz": (
+        "3a398f647536511ec79a9f9884b47ac6d73c4b9cc17c1d7e50bd6db383f9d92c"
+    ),
+    "binance_trades_2024-04-01_LINKUSDT.csv.gz": (
+        "5a56eccb4faa57a0c44c77a34064e97d1b599e1e5e91a080ccfe0524d3de967a"
+    ),
 }
 
 
@@ -147,9 +154,13 @@ def _tardis_times() -> list[pl.Expr]:
     ]
 
 
-def read_tardis(book_path: Path, trades_path: Path, exchange: str, date: str) -> Imported:
-    book = pl.read_csv(book_path, schema_overrides={"price": pl.Float64, "amount": pl.Float64})
-    trades = pl.read_csv(trades_path, schema_overrides={"price": pl.Float64, "amount": pl.Float64})
+def read_tardis(
+    book_paths: Sequence[Path], trade_paths: Sequence[Path], exchange: str, dates: Sequence[str]
+) -> Imported:
+    """One or more symbol-days, in date order. Each day's file starts with its own snapshot."""
+    overrides = {"price": pl.Float64, "amount": pl.Float64}
+    book = pl.concat([pl.read_csv(p, schema_overrides=overrides) for p in book_paths])
+    trades = pl.concat([pl.read_csv(p, schema_overrides=overrides) for p in trade_paths])
     symbols = set(book["symbol"].unique()) | set(trades["symbol"].unique())
     if len(symbols) != 1:
         raise SchemaError(f"expected one symbol, found {sorted(symbols)}")
@@ -182,7 +193,7 @@ def read_tardis(book_path: Path, trades_path: Path, exchange: str, date: str) ->
     return Imported(
         events=events,
         source=SourceInfo(
-            name=f"Tardis.dev sample: {exchange} {symbols.pop()} {date} incremental_book_L2+trades",
+            name=f"Tardis.dev samples: {exchange} {symbols.pop()} {', '.join(dates)}",
             license=TARDIS_LICENSE,
             synthetic=False,
             url="https://docs.tardis.dev/downloadable-csv-files",
@@ -204,6 +215,10 @@ def read_tardis(book_path: Path, trades_path: Path, exchange: str, date: str) ->
             },
         ),
         adapter="tardis-csv",
-        params={"exchange": exchange, "date": date, "files": [book_path.name, trades_path.name]},
-        input_sha256=[sha256_file(book_path), sha256_file(trades_path)],
+        params={
+            "exchange": exchange,
+            "dates": list(dates),
+            "files": [p.name for p in [*book_paths, *trade_paths]],
+        },
+        input_sha256=[sha256_file(p) for p in [*book_paths, *trade_paths]],
     )

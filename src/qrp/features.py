@@ -19,7 +19,7 @@ from collections.abc import Sequence
 import polars as pl
 from pydantic import BaseModel
 
-from qrp.book import ladder_columns, reconstruct
+from qrp.book import BookStats, ladder_columns, reconstruct
 from qrp.schemas import TRADE, Capabilities
 
 NS = 1_000_000_000
@@ -136,35 +136,48 @@ def _asof(left: pl.DataFrame, right: pl.DataFrame, on: str, cols: Sequence[str])
     ).select(cols)
 
 
+def book_quotes(
+    events: pl.DataFrame, caps: Capabilities, timing: TimingConfig, levels: int
+) -> tuple[pl.DataFrame, BookStats]:
+    """Reconstructed book (one row per message) with its availability time, in clock order."""
+    sequencing = {k: v.sequencing for k, v in caps.streams.items()}
+    n_levels = min(levels, caps.book_depth or levels)
+    quotes, stats = reconstruct(events, sequencing, levels=n_levels)
+    quotes = (
+        quotes.with_columns(available_time(caps, timing))
+        .filter(pl.col("available_time_ns").is_not_null())
+        .sort("available_time_ns", maintain_order=True)
+    )
+    return quotes, stats
+
+
 def build_features(
     events: pl.DataFrame,
     caps: Capabilities,
     cfg: FeatureConfig,
     timing: TimingConfig,
+    quotes: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
-    """Features and labels for one symbol. Rows: one per grid time; ``valid`` marks usable rows."""
+    """Features and labels for one symbol. Rows: one per grid time; ``valid`` marks usable rows.
+
+    ``quotes`` may be passed in from ``book_quotes`` to avoid reconstructing the book twice.
+    """
     if cfg.horizon_s * 1000 % cfg.interval_ms or any(
         w * 1000 % cfg.interval_ms for w in cfg.windows_s
     ):
         raise FeatureError("horizon and windows must be multiples of the sampling interval")
     names = select_features(cfg, caps)
     n_levels = min(cfg.depth_levels, caps.book_depth or cfg.depth_levels)
-    sequencing = {k: v.sequencing for k, v in caps.streams.items()}
     clock = available_time(caps, timing)
     step = cfg.interval_ms * 1_000_000
 
-    quotes, _ = reconstruct(events, sequencing, levels=n_levels)
+    if quotes is None:
+        quotes, _ = book_quotes(events, caps, timing, cfg.depth_levels)
     b, a = pl.col("bid_px_0"), pl.col("ask_px_0")
     qb, qa = pl.col("bid_sz_0"), pl.col("ask_sz_0")
-    quotes = (
-        quotes.with_columns(clock)
-        .filter(pl.col("available_time_ns").is_not_null())
-        .sort("available_time_ns", maintain_order=True)
-        .with_columns(_session("available_time_ns"))
-        .with_columns(
-            quote_ok=pl.col("synced") & ~pl.col("crossed") & b.is_not_null() & a.is_not_null(),
-            mid=(a + b) / 2,
-        )
+    quotes = quotes.with_columns(_session("available_time_ns")).with_columns(
+        quote_ok=pl.col("synced") & ~pl.col("crossed") & b.is_not_null() & a.is_not_null(),
+        mid=(a + b) / 2,
     )
     prev = {
         c: pl.col(c).shift(1).over("session")

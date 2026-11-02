@@ -1,0 +1,60 @@
+# End-to-end demonstration on the bundled SYNTHETIC feed (qrp fixture). Results say nothing
+# about real markets; they show that the pipeline finds a signal the generator is known to
+# contain and that the controls behave.
+name = "synthetic_imbalance"
+seed = 20240102
+description = """
+Does top-of-book imbalance predict the 10 s mid return in a zero-intelligence book, and does a
+cost-aware threshold strategy survive simulated execution?
+"""
+
+[data]
+catalog = "data/catalog"
+dataset = "synthetic"
+version = "latest"
+symbol = "SYNTH"
+dev_dates = ["2024-01-02", "2024-01-03"]
+test_dates = ["2024-01-04", "2024-01-04"]
+
+[features]
+interval_ms = 1000
+windows_s = [5, 30]
+depth_levels = 5
+horizon_s = 10
+warmup_s = 60
+
+[evaluation]
+n_folds = 5
+embargo_s = 30
+n_boot = 300
+n_null = 200
+regime_feature = "rv_30s"
+
+[[models]]
+name = "zero"
+kind = "zero"
+
+[[models]]
+name = "mean"
+kind = "mean"
+
+[[models]]
+name = "ols_imbalance_l1"
+kind = "ridge"
+features = ["imbalance_l1"]
+
+[[models]]
+name = "ridge_all"
+kind = "ridge"
+features = "all"
+alphas = [0.001, 0.01, 0.1]
+
+[backtest]
+position_size = 10
+max_position = 10
+decision_latency_ms = 1.0
+order_latency_ms = 5.0
+ack_latency_ms = 5.0
+
+[backtest.costs]
+taker_fee_bps = 2.0

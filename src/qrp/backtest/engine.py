@@ -36,8 +36,6 @@ class BacktestConfig(BaseModel):
     position_size: float = 100.0  # |target| when the signal clears the threshold
     max_position: float = 100.0  # inventory limit
     max_notional: float | None = None  # exposure limit in quote currency
-    threshold: float | None = None  # on the forecast; None = cost rule (see below)
-    threshold_cost_multiple: float = 1.0  # threshold = multiple * round-trip cost estimate
     decision_latency_ms: float = 1.0
     order_latency_ms: float = 5.0
     ack_latency_ms: float = 5.0
