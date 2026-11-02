@@ -3,7 +3,7 @@ from __future__ import annotations
 import polars as pl
 import pytest
 from conftest import MS, events
-from hypothesis import given
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from qrp.schemas import SchemaError, Sequencing, conform
@@ -122,9 +122,22 @@ def test_stale_feed_gap_within_session() -> None:
     assert violations(df) == {"stale_feed_gap": 1}
 
 
+@settings(deadline=None)  # the first call pays one-off warm-up; timing is not the property
 @given(st.sets(st.integers(min_value=2, max_value=40)))
 def test_gap_count_equals_number_of_missing_runs(removed: set[int]) -> None:
     kept = [s for s in range(1, 42) if s not in removed]  # seq 1 and 41 always survive
     df = events([(s, s, "book", 1, 99.0, s) for s in kept])
     runs = sum(1 for s in removed if s - 1 not in removed)
     assert violations(df).get("seq_gap", 0) == runs
+
+
+def test_unsafe_symbol_is_rejected() -> None:
+    df = events([(1, 0, "book", 1, 99.0, 1)]).with_columns(pl.lit("XBT/USD").alias("symbol"))
+    assert violations(df) == {"unsafe_symbol": 1}
+
+
+def test_same_price_prints_in_one_message_must_be_aggregated() -> None:
+    sweep = events([(1, 0, "trade", 1, 101.0, 1), (1, 0, "trade", 1, 101.0, 3)])
+    assert violations(sweep) == {"conflicting_update": 2}
+    across_levels = events([(1, 0, "trade", 1, 101.0, 1), (1, 0, "trade", 1, 102.0, 3)])
+    assert violations(across_levels) == {}

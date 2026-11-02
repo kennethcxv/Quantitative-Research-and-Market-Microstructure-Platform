@@ -97,6 +97,7 @@ class DatasetManifest(BaseModel):
     adapter_params: dict[str, Any]
     input_sha256: list[str]
     n_rows: int
+    content_sha256: str | None = None  # catalog.content_fingerprint of the stored events
     duplicates_removed: int
     symbols: list[str]
     time_min_ns: int

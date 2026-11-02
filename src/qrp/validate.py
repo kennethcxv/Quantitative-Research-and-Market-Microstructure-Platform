@@ -127,6 +127,13 @@ def validate_events(
         ),
         check(
             rows,
+            ~pl.col("symbol").str.contains(r"^[A-Za-z0-9._-]+$"),
+            "unsafe_symbol",
+            "error",
+            "symbol must match [A-Za-z0-9._-]+ (it becomes a partition directory name)",
+        ),
+        check(
+            rows,
             ~pl.col("stream").is_in(list(sequencing)),
             "undeclared_stream",
             "error",
@@ -160,7 +167,8 @@ def validate_events(
             level_key.is_duplicated() & ~all_columns.is_duplicated(),
             "conflicting_update",
             "error",
-            "one message gives two different sizes for the same level",
+            "two different rows for one (kind, side, price) in a message; prints at the same "
+            "price in one message must be aggregated by the producer",
         ),
         check(
             rows,

@@ -61,6 +61,29 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def content_fingerprint(events: pl.DataFrame) -> str:
+    """SHA-256 over the canonical values, independent of file format and library version.
+
+    Numeric columns are hashed as little-endian int64/float64 (nulls as a separate mask);
+    string columns as codes into their sorted distinct values plus those values.
+    """
+    h = hashlib.sha256(str(events.height).encode())
+    for name in events.columns:
+        col = events[name]
+        h.update(name.encode())
+        if col.dtype == pl.String:
+            values = sorted(col.unique().drop_nulls().to_list())
+            h.update("\x1f".join(values).encode())
+            codes = col.cast(pl.Enum(values)).to_physical()
+            h.update(codes.cast(pl.Int64).to_numpy().astype("<i8").tobytes())
+        else:
+            h.update(col.is_null().to_numpy().tobytes())
+            filled = col.fill_null(0)
+            dtype = "<f8" if col.dtype.is_float() else "<i8"
+            h.update(filled.to_numpy().astype(dtype).tobytes())
+    return h.hexdigest()
+
+
 def version_id(input_sha256: Sequence[str], adapter: str, params: dict[str, Any]) -> str:
     payload = json.dumps(
         [EVENTS_SCHEMA_VERSION, adapter, params, list(input_sha256)], sort_keys=True, default=str
@@ -114,13 +137,23 @@ class Catalog:
         """Validate ``events`` (in capture order) and store them as a new immutable version."""
         version = version_id(input_sha256, adapter, adapter_params)
         final_dir = self._dir(name, version)
+        events, n_dupes = deduplicate(conform(events))
+        fingerprint = content_fingerprint(events)
         if (final_dir / "manifest.json").exists():
+            # The id covers inputs and adapter parameters but not adapter code. If the code
+            # changed what the same inputs map to, refuse rather than return stale data.
+            existing = self.resolve(name, version)
+            if existing.content_sha256 not in (None, fingerprint):
+                raise CatalogError(
+                    f"{name}/{version}: same inputs now produce different events; the adapter "
+                    "changed, so give it a new name/version (e.g. 'tardis-csv@2')"
+                )
+            self._log_version(name, existing)  # repairs a log line lost to a crash
             log.info("dataset version already in catalog", extra={"version": version})
-            return self.resolve(name, version)
+            return existing
         if revises is not None:
             self.resolve(name, revises)  # the parent must exist
 
-        events, n_dupes = deduplicate(conform(events))
         sequencing = {k: v.sequencing for k, v in capabilities.streams.items()}
         report = validate_events(events, sequencing, validation)
         if not report.ok:
@@ -151,6 +184,7 @@ class Catalog:
             adapter_params=adapter_params,
             input_sha256=list(input_sha256),
             n_rows=events.height,
+            content_sha256=fingerprint,
             duplicates_removed=n_dupes,
             symbols=sorted(events["symbol"].unique().to_list()),
             time_min_ns=bounds[0],
@@ -163,23 +197,24 @@ class Catalog:
         )
         (tmp_dir / "manifest.json").write_text(manifest.model_dump_json(indent=2))
         tmp_dir.rename(final_dir)
-        with (self.root / name / "versions.jsonl").open("a") as f:
-            f.write(
-                json.dumps(
-                    {
-                        "version": version,
-                        "created_at_ns": manifest.created_at_ns,
-                        "parent_version": revises,
-                        "note": note,
-                    }
-                )
-                + "\n"
-            )
+        self._log_version(name, manifest)
         log.info(
             "imported dataset version",
             extra={"dataset": name, "version": version, "rows": events.height, "files": len(files)},
         )
         return manifest
+
+    def _log_version(self, name: str, manifest: DatasetManifest) -> None:
+        if any(v["version"] == manifest.version for v in self.versions(name)):
+            return
+        entry = {
+            "version": manifest.version,
+            "created_at_ns": manifest.created_at_ns,
+            "parent_version": manifest.parent_version,
+            "note": manifest.revision_note,
+        }
+        with (self.root / name / "versions.jsonl").open("a") as f:
+            f.write(json.dumps(entry) + "\n")
 
     @staticmethod
     def _write_partitions(events: pl.DataFrame, out: Path) -> list[FileEntry]:

@@ -112,3 +112,35 @@ def test_capabilities_must_match_data(tmp_path: Path, feed: pl.DataFrame) -> Non
     cat = Catalog(tmp_path)
     with pytest.raises(CatalogError, match="has_trades"):
         _import(cat, feed.filter(pl.col("kind") != "trade"))
+
+
+def test_changed_adapter_output_for_same_inputs_is_refused(
+    tmp_path: Path, feed: pl.DataFrame
+) -> None:
+    cat = Catalog(tmp_path)
+    first = _import(cat, feed)
+    assert first.content_sha256 is not None
+    # Same input hashes and adapter parameters, different events: the adapter code changed.
+    with pytest.raises(CatalogError, match="adapter changed"):
+        _import(cat, feed.with_columns(pl.col("size") * 2))
+
+
+def test_reimport_repairs_a_missing_version_log_entry(tmp_path: Path, feed: pl.DataFrame) -> None:
+    cat = Catalog(tmp_path)
+    first = _import(cat, feed)
+    (tmp_path / "synth" / "versions.jsonl").unlink()  # as if we crashed after the rename
+    assert cat.versions("synth") == []
+    assert _import(cat, feed).version == first.version
+    assert [v["version"] for v in cat.versions("synth")] == [first.version]
+
+
+def test_content_fingerprint_is_value_based(feed: pl.DataFrame) -> None:
+    from qrp.catalog import content_fingerprint
+
+    assert content_fingerprint(feed) == content_fingerprint(feed.clone())
+    nudged = feed.with_columns(
+        pl.when(pl.int_range(pl.len()) == 7).then(pl.col("price") + 1e-9).otherwise("price")
+    )
+    assert content_fingerprint(nudged) != content_fingerprint(feed)
+    no_recv = feed.with_columns(pl.lit(None, pl.Int64).alias("recv_time_ns"))
+    assert content_fingerprint(no_recv) != content_fingerprint(feed)
