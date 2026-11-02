@@ -136,10 +136,17 @@ def validate_events(
             rows,
             (pl.col("price") <= 0)
             | (pl.col("size") < 0)
-            | (pl.col("kind").is_in([TRADE, SNAPSHOT]) & (pl.col("size") <= 0)),
+            | ((pl.col("kind") == TRADE) & (pl.col("size") <= 0)),
             "nonpositive_price_or_size",
             "error",
-            "price <= 0, negative size, or an empty trade/snapshot level",
+            "price <= 0, negative size, or an empty trade",
+        ),
+        check(
+            rows,
+            (pl.col("kind") == SNAPSHOT) & (pl.col("size") == 0),
+            "empty_snapshot_level",
+            "warning",
+            "snapshot lists a level with zero size (treated as absent)",
         ),
         check(
             rows,

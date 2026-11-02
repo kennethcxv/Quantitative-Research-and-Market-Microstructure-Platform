@@ -106,7 +106,7 @@ def reconstruct(
             elif p in levels_s:
                 del levels_s[p]
                 del prices_s[bisect.bisect_left(prices_s, p)]
-            else:
+            elif not is_snapshot[r]:
                 stats["deletes_of_unknown_level"] += 1
 
         bids, asks = prices[1], prices[-1]

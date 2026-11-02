@@ -111,6 +111,12 @@ def test_bad_values_and_domains() -> None:
     assert v["nonpositive_price_or_size"] == 1
 
 
+def test_empty_snapshot_level_is_a_warning() -> None:
+    df = events([(1, 0, "snapshot", 1, 99.0, 0), (1, 0, "snapshot", -1, 101.0, 2)])
+    assert violations(df) == {"empty_snapshot_level": 1}
+    assert validate_events(df, CONTIGUOUS).ok
+
+
 def test_stale_feed_gap_within_session() -> None:
     df = events([(1, 0, "book", 1, 99.0, 1), (2, 61_000, "book", 1, 99.0, 2)])
     assert violations(df) == {"stale_feed_gap": 1}
